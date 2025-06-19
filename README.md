@@ -135,7 +135,35 @@ python run_all_models.py questions.json \
     --save-incorrect
 ```
 
-### 4. Reasoning Analysis & Validation
+### 4. Advanced Model Scoring & Evaluation
+- **Primary Tool**: `argonium_score_parallel_v9.py`
+- **Purpose**: Advanced multi-model scoring with parallel processing and detailed grading
+
+**Key Features**:
+- **Parallel Processing**: Multi-threaded evaluation for faster processing
+- **Auto-Format Detection**: Automatically detects multiple-choice vs. free-form questions
+- **Advanced Grading**: Uses AI models to grade responses with detailed evaluation
+- **Error Analysis**: Saves incorrect answers for detailed analysis
+- **Reproducible Sampling**: Random sampling with seed support
+
+**Example**:
+```bash
+# Basic parallel scoring
+python argonium_score_parallel_v9.py questions.json \
+    --model gpt41 \
+    --grader scout \
+    --parallel 8 \
+    --save-incorrect
+
+# Random sampling with reproducible results
+python argonium_score_parallel_v9.py questions.json \
+    --model claude3 \
+    --grader gpt41 \
+    --random 50 \
+    --seed 42
+```
+
+### 5. Reasoning Analysis & Validation
 - **Primary Tool**: `reasoning_traces_v6.py`
 - **Workflow Script**: `scripts/reasoning_analysis.sh`
 - **Purpose**: Deep cognitive analysis with expert personas
@@ -154,7 +182,7 @@ python reasoning_traces_v6.py questions.json \
     --whole-trace-analysis
 ```
 
-### 5. Data Processing & Analysis
+### 6. Data Processing & Analysis
 Tools for JSON manipulation, sampling, and report generation:
 - `merge_json.py` - Combine multiple JSON files
 - `merge_incorrect_answers.py` - Analyze model errors
@@ -169,6 +197,7 @@ Tools for JSON manipulation, sampling, and report generation:
 | `classify_papers.py` | Content classification | 25+ scientific categories, AI-powered |
 | `analyze_resources.py` | Content analysis | TF-IDF, TextRank, comprehensive summaries |
 | `run_all_models.py` | Model benchmarking | Multi-model, parallel evaluation |
+| `argonium_score_parallel_v9.py` | Advanced scoring | Parallel processing, AI grading, error analysis |
 | `reasoning_traces_v6.py` | Reasoning analysis | Expert personas, detailed traces |
 | `merge_incorrect_answers.py` | Error analysis | Intersection analysis, difficulty assessment |
 
@@ -184,6 +213,7 @@ argonium/
 ├── analyze_resources.py          # Literature analysis
 ├── classify_papers.py           # AI-powered classification
 ├── download_papers_v8.py        # Paper discovery and download
+├── argonium_score_parallel_v9.py # Advanced parallel scoring engine
 ├── reasoning_traces_v6.py       # Detailed reasoning analysis
 ├── run_all_models.py            # Multi-model benchmarking
 ├── merge_incorrect_answers.py   # Error analysis
@@ -249,6 +279,30 @@ export CUSTOM_API_KEY="your-custom-api-key"
     --save-incorrect
 ```
 
+### Advanced Model Evaluation
+```bash
+# 1. High-throughput parallel scoring
+python argonium_score_parallel_v9.py questions.json \
+    --model gpt41 \
+    --grader scout \
+    --parallel 12 \
+    --save-incorrect
+
+# 2. Random sampling for quick evaluation
+python argonium_score_parallel_v9.py questions.json \
+    --model claude3 \
+    --grader gpt41 \
+    --random 100 \
+    --seed 42
+
+# 3. Compare different grading approaches
+python argonium_score_parallel_v9.py questions.json \
+    --model llama2 \
+    --grader gpt41 \
+    --format mc \
+    --parallel 8
+```
+
 ### Model Reasoning Assessment
 ```bash
 # 1. Analyze reasoning with domain expertise
@@ -283,9 +337,10 @@ export CUSTOM_API_KEY="your-custom-api-key"
 - **Synopsis files**: Quick paper overviews
 
 ### Model Evaluation
-- **JSON results**: Detailed performance metrics
-- **Markdown reports**: Human-readable summaries
-- **Error analysis**: Incorrect answer collections
+- **JSON results**: Detailed performance metrics with confidence scores
+- **Markdown reports**: Human-readable summaries with accuracy breakdowns
+- **Error analysis**: Incorrect answer collections for pattern analysis
+- **Parallel scoring logs**: Real-time progress tracking and performance stats
 
 ### Reasoning Analysis
 - **Detailed traces**: Complete thought processes
