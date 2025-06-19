@@ -1,0 +1,141 @@
+# Argonium Research Pipeline .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Configuration files with sensitive data
+model_servers.yaml
+config.yaml
+secrets.yaml
+
+# API keys and environment files
+.env
+.env.local
+.env.production
+.env.staging
+
+# Logs
+logs/
+*.log
+resource_analysis.log
+
+# Data directories
+data/
+papers/
+downloads/
+research_output/
+research_pipeline/
+literature_data/
+benchmark_results/
+reasoning_analysis/
+final_reports/
+
+# Generated files
+*.json
+!*.example.json
+*.txt
+!requirements.txt
+*.csv
+*.md
+!README.md
+!workflow.md
+!LICENSE.md
+
+# PDF files
+*.pdf
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+.cache/
+
+# NLTK data (downloaded during installation)
+nltk_data/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Archive files
+*.zip
+*.tar.gz
+*.tar.bz2
+*.rar
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Results and output directories
+results/
+output/
+benchmark_summary_*.json
+reasoning_traces_*.json
+whole_trace_*.json
+merged_*.json
+incorrect_*.json
+processed_papers.txt
+
+# Specific Argonium generated files
+README_generated.md
+*_syn_abs.txt
+PROCESSED/
