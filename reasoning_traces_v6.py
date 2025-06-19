@@ -32,7 +32,7 @@ def parse_arguments():
     import argparse
     parser = argparse.ArgumentParser(
         description='Generate detailed reasoning chains as an expert\'s internal dialogue with blind prediction of the correct answer.')
-    parser.add_argument('input_file', help='JSON file containing multiple choice questions (output of make_v17.py)')
+    parser.add_argument('input_file', help='JSON file containing multiple choice questions (output of make_v21.py)')
     parser.add_argument('--output', default='reasoning_traces.json', 
                         help='Output JSON file (default: reasoning_traces.json)')
     parser.add_argument('--model', default='gpt41', 
