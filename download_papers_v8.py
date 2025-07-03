@@ -6,6 +6,8 @@ import time
 import sys
 import argparse
 import yaml
+import subprocess
+import tempfile
 from openai import OpenAI, OpenAIError
 
 # Base URL for Semantic Scholar API
@@ -95,9 +97,41 @@ def search_papers(keyword, api_key, limit=100, offset=0):
     print(f"Failed to fetch papers for keyword '{keyword}' after {max_retries} retries.")
     return None
 
+def validate_pdf_with_qpdf(pdf_path):
+    """
+    Validate a PDF file using qpdf.
+    Returns True if valid, False otherwise.
+    """
+    try:
+        # Use qpdf to check if the PDF is valid
+        # qpdf --check returns 0 for valid PDFs, non-zero for invalid
+        result = subprocess.run(['qpdf', '--check', pdf_path], 
+                              capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            print(f"PDF validation successful: {pdf_path}")
+            return True
+        else:
+            print(f"PDF validation failed: {pdf_path}")
+            print(f"qpdf error: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print(f"PDF validation timed out: {pdf_path}")
+        return False
+    except FileNotFoundError:
+        print("Warning: qpdf not found. Install qpdf for PDF validation.")
+        print("On macOS: brew install qpdf")
+        print("On Ubuntu/Debian: sudo apt-get install qpdf")
+        return True  # Allow download to proceed if qpdf is not available
+    except Exception as e:
+        print(f"Error validating PDF {pdf_path}: {e}")
+        return False
+
 def download_pdf(pdf_url, save_path):
     """
     Download a PDF from 'pdf_url' and save it to 'save_path'.
+    Validates the PDF using qpdf before saving to final location.
     Includes error handling and diagnostics.
     """
     print(f"Attempting to download PDF from: {pdf_url}")
@@ -105,17 +139,39 @@ def download_pdf(pdf_url, save_path):
         response = requests.get(pdf_url, stream=True, timeout=60) # Added timeout
         print(f"Download response status code: {response.status_code}")
         if response.status_code == 200:
-            with open(save_path, 'wb') as f:
+            # Download to a temporary file first
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                temp_path = temp_file.name
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            print(f"Downloaded PDF to: {save_path}")
+                    temp_file.write(chunk)
+            
+            print(f"Downloaded PDF to temporary file: {temp_path}")
+            
+            # Validate the PDF using qpdf
+            if validate_pdf_with_qpdf(temp_path):
+                # If valid, move to final location
+                import shutil
+                shutil.move(temp_path, save_path)
+                print(f"PDF validated and saved to: {save_path}")
+            else:
+                # If invalid, remove temporary file and report error
+                os.unlink(temp_path)
+                print(f"Invalid PDF downloaded from {pdf_url}. File not saved.")
+                return False
+            
         else:
             print(f"Failed to download PDF from {pdf_url} - "
                   f"status code: {response.status_code}")
+            return False
+            
     except requests.exceptions.Timeout:
         print(f"Timeout while downloading PDF from {pdf_url}")
+        return False
     except Exception as e:
         print(f"Exception while downloading PDF from {pdf_url}: {e}")
+        return False
+    
+    return True
 
 def generate_keywords_with_openai(base_keyword, model_shortname):
     """
@@ -543,10 +599,14 @@ def main():
 
                 if not os.path.exists(save_path):
                     print(f"Found Open Access PDF URL. Downloading...")
-                    download_pdf(pdf_url, save_path)
-                    if os.path.exists(save_path): # Verify download succeeded
-                         pdfs_downloaded += 1
-                         pdf_downloaded_this_paper = True
+                    if download_pdf(pdf_url, save_path):
+                        if os.path.exists(save_path): # Verify download succeeded
+                             pdfs_downloaded += 1
+                             pdf_downloaded_this_paper = True
+                        else:
+                            print(f"Download reported success but file not found: {save_path}")
+                    else:
+                        print(f"Download failed for {pdf_url}")
                     # Sleep after download attempt
                     print("Sleeping for 5 seconds after PDF download attempt...")
                     time.sleep(5)

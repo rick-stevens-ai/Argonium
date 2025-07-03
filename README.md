@@ -68,6 +68,12 @@ A comprehensive toolkit for scientific literature analysis, AI model evaluation,
     --max-papers 50 \
     --organize
 
+# Papers to reasoning traces (simple)
+./scripts/papers_to_reasoning_simple.sh \
+    --papers-dir ./research_papers \
+    --specialty microbiologist \
+    --model gpt41
+
 # Multi-model benchmarking
 ./scripts/model_benchmark.sh \
     --questions questions.json \
@@ -196,6 +202,7 @@ Tools for JSON manipulation, sampling, and report generation:
 | `download_papers_v8.py` | Paper discovery | AI keyword generation, relevance filtering |
 | `classify_papers.py` | Content classification | 25+ scientific categories, AI-powered |
 | `analyze_resources.py` | Content analysis | TF-IDF, TextRank, comprehensive summaries |
+| `make_v21.py` | Question generation | Extract questions from papers, chunk processing |
 | `run_all_models.py` | Model benchmarking | Multi-model, parallel evaluation |
 | `argonium_score_parallel_v9.py` | Advanced scoring | Parallel processing, AI grading, error analysis |
 | `reasoning_traces_v6.py` | Reasoning analysis | Expert personas, detailed traces |
@@ -209,10 +216,12 @@ argonium/
 │   ├── complete_research_pipeline.sh
 │   ├── literature_discovery.sh
 │   ├── model_benchmark.sh
-│   └── reasoning_analysis.sh
+│   ├── reasoning_analysis.sh
+│   └── papers_to_reasoning_simple.sh  # Simple papers → reasoning traces
 ├── analyze_resources.py          # Literature analysis
 ├── classify_papers.py           # AI-powered classification
 ├── download_papers_v8.py        # Paper discovery and download
+├── make_v21.py                   # Question generation from papers
 ├── argonium_score_parallel_v9.py # Advanced parallel scoring engine
 ├── reasoning_traces_v6.py       # Detailed reasoning analysis
 ├── run_all_models.py            # Multi-model benchmarking
