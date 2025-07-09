@@ -11,38 +11,42 @@ Usage:
     python paper_syn_org.py --directory papers_dir --model gpt4
 """
 
-import os
-import sys
-import json
 import argparse
-import yaml
-import time
 import hashlib
-from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
-from dataclasses import dataclass, asdict
-from openai import OpenAI
-import PyPDF2
+import json
+import os
 import re
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import PyPDF2
+import yaml
+from openai import OpenAI
 
 # Optional import for progress bar
 try:
     from tqdm import tqdm
+
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
 
-MODEL_CONFIG_FILE = 'model_servers.yaml'
+MODEL_CONFIG_FILE = "model_servers.yaml"
+
 
 @dataclass
 class PaperStructure:
     """Data class to hold structured paper information"""
+
     paper_id: str
     original_filename: str
     title: str
     abstract: str
     keywords: List[str]
-    
+
     # Enhanced sections
     introduction: Dict[str, Any]
     hypothesis: Dict[str, Any]  # Expanded with formal notation and hallmarks
@@ -53,88 +57,102 @@ class PaperStructure:
     conclusion: str
     acknowledgments: str
     references: List[str]
-    
+
     # Metadata
     extraction_timestamp: float
     processing_notes: List[str]
+
 
 class PaperAnalyzer:
     """
     Analyzes scientific papers and extracts structured information.
     Reuses patterns from existing scripts for OpenAI client setup.
     """
-    
+
     def __init__(self, model_shortname: str, force_synthesis: bool = False):
         self.model_shortname = model_shortname
         self.force_synthesis = force_synthesis
         self.model_config = self._load_model_config()
         self._setup_openai_client()
-    
+
     def _load_model_config(self) -> Dict[str, Any]:
         """Load model configuration from YAML file"""
         try:
-            with open(MODEL_CONFIG_FILE, 'r') as f:
+            with open(MODEL_CONFIG_FILE, "r") as f:
                 config = yaml.safe_load(f)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Error: Model configuration file '{MODEL_CONFIG_FILE}' not found.")
+            raise FileNotFoundError(
+                f"Error: Model configuration file '{MODEL_CONFIG_FILE}' not found."
+            )
         except yaml.YAMLError as e:
             raise ValueError(f"Error parsing YAML file '{MODEL_CONFIG_FILE}': {e}")
-        
+
         model_config = None
-        for server in config.get('servers', []):
-            if server.get('shortname') == self.model_shortname:
+        for server in config.get("servers", []):
+            if server.get("shortname") == self.model_shortname:
                 model_config = server
                 break
-        
+
         if not model_config:
-            raise ValueError(f"Error: Model shortname '{self.model_shortname}' not found in '{MODEL_CONFIG_FILE}'.")
-        
+            raise ValueError(
+                f"Error: Model shortname '{self.model_shortname}' not found in '{MODEL_CONFIG_FILE}'."
+            )
+
         return model_config
-    
+
     def _setup_openai_client(self) -> None:
         """Setup OpenAI client"""
         model_config = self._load_model_config()
-        
+
         # Determine OpenAI API Key
-        openai_api_key_config = model_config.get('openai_api_key')
+        openai_api_key_config = model_config.get("openai_api_key")
         openai_api_key = None
-        
+
         if openai_api_key_config == "${OPENAI_API_KEY}":
-            openai_api_key = os.environ.get('OPENAI-API-KEY') or os.environ.get('OPENAI_API_KEY')
+            openai_api_key = os.environ.get("OPENAI-API-KEY") or os.environ.get(
+                "OPENAI_API_KEY"
+            )
             if not openai_api_key:
-                raise ValueError("Error: OpenAI API key is configured to use environment variable "
-                               "'OPENAI-API-KEY' or 'OPENAI_API_KEY', but neither is set.")
+                raise ValueError(
+                    "Error: OpenAI API key is configured to use environment variable "
+                    "'OPENAI-API-KEY' or 'OPENAI_API_KEY', but neither is set."
+                )
         elif openai_api_key_config == "${VLLM_API_KEY}":
-            openai_api_key = os.environ.get('VLLM-API-KEY') or os.environ.get('VLLM_API_KEY')
+            openai_api_key = os.environ.get("VLLM-API-KEY") or os.environ.get(
+                "VLLM_API_KEY"
+            )
             if not openai_api_key:
-                raise ValueError("Error: VLLM API key is configured to use environment variable "
-                               "'VLLM-API-KEY' or 'VLLM_API_KEY', but neither is set.")
+                raise ValueError(
+                    "Error: VLLM API key is configured to use environment variable "
+                    "'VLLM-API-KEY' or 'VLLM_API_KEY', but neither is set."
+                )
         elif openai_api_key_config:
             openai_api_key = openai_api_key_config
         else:
-            raise ValueError(f"Error: 'openai_api_key' not specified for model '{self.model_shortname}'.")
-        
+            raise ValueError(
+                f"Error: 'openai_api_key' not specified for model '{self.model_shortname}'."
+            )
+
         # Get API base and model
-        openai_api_base = model_config.get('openai_api_base')
-        openai_model = model_config.get('openai_model')
-        
+        openai_api_base = model_config.get("openai_api_base")
+        openai_model = model_config.get("openai_model")
+
         if not openai_api_base or not openai_model:
-            raise ValueError(f"Error: 'openai_api_base' or 'openai_model' missing for model '{self.model_shortname}'.")
-        
+            raise ValueError(
+                f"Error: 'openai_api_base' or 'openai_model' missing for model '{self.model_shortname}'."
+            )
+
         try:
             # Set up OpenAI client for new version
-            self.client = OpenAI(
-                api_key=openai_api_key,
-                base_url=openai_api_base
-            )
+            self.client = OpenAI(api_key=openai_api_key, base_url=openai_api_base)
             self.openai_model = openai_model
         except Exception as e:
             raise ValueError(f"Error initializing OpenAI client: {e}")
-    
+
     def _extract_text_from_pdf(self, pdf_path: str) -> str:
         """Extract text from PDF"""
         try:
-            with open(pdf_path, 'rb') as file:
+            with open(pdf_path, "rb") as file:
                 pdf_reader = PyPDF2.PdfReader(file)
                 text = ""
                 for page in pdf_reader.pages:
@@ -143,25 +161,25 @@ class PaperAnalyzer:
         except Exception as e:
             print(f"Error extracting text from PDF {pdf_path}: {e}")
             return ""
-    
+
     def _clean_json_response(self, response_text: str) -> str:
         """Clean response text to extract JSON from various formats"""
         if not response_text or not response_text.strip():
             print("Warning: Empty response received from model")
             return "{}"
-        
+
         cleaned_text = response_text.strip()
         original_text = cleaned_text  # Keep original for debugging
-        
+
         # Remove markdown code blocks
-        if cleaned_text.startswith('```json'):
+        if cleaned_text.startswith("```json"):
             cleaned_text = cleaned_text[7:]
-        elif cleaned_text.startswith('```'):
+        elif cleaned_text.startswith("```"):
             cleaned_text = cleaned_text[3:]
-        
-        if cleaned_text.endswith('```'):
+
+        if cleaned_text.endswith("```"):
             cleaned_text = cleaned_text[:-3]
-        
+
         # Remove common prefixes that models might add
         prefixes_to_remove = [
             "Here's the JSON response:",
@@ -179,55 +197,64 @@ class PaperAnalyzer:
             "Here's my analysis in JSON format:",
             "Based on the text, here's the JSON:",
         ]
-        
+
         for prefix in prefixes_to_remove:
             if cleaned_text.lower().startswith(prefix.lower()):
-                cleaned_text = cleaned_text[len(prefix):].strip()
-        
+                cleaned_text = cleaned_text[len(prefix) :].strip()
+
         # Try to find JSON within the text if it's not at the start
         import re
+
         # Look for JSON objects that span multiple lines
-        json_match = re.search(r'\{.*?\}', cleaned_text, re.DOTALL)
+        json_match = re.search(r"\{.*?\}", cleaned_text, re.DOTALL)
         if json_match:
             cleaned_text = json_match.group(0)
         else:
             # Look for JSON arrays
-            json_match = re.search(r'\[.*?\]', cleaned_text, re.DOTALL)
+            json_match = re.search(r"\[.*?\]", cleaned_text, re.DOTALL)
             if json_match:
                 cleaned_text = json_match.group(0)
-        
+
         # Final cleanup
         cleaned_text = cleaned_text.strip()
-        
+
         # Try to validate JSON before returning
         try:
             json.loads(cleaned_text)
             return cleaned_text
         except json.JSONDecodeError as e:
-            print(f"Warning: Model returned non-JSON response, attempting text parsing...")
+            print(
+                f"Warning: Model returned non-JSON response, attempting text parsing..."
+            )
             print(f"JSON parsing error: {e}")
             print(f"First 200 characters of response: {original_text[:200]}")
-            
+
             # Last resort: try to extract any JSON-like structure
-            brace_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', original_text, re.DOTALL)
+            brace_match = re.search(
+                r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", original_text, re.DOTALL
+            )
             if brace_match:
                 try:
                     json.loads(brace_match.group(0))
                     return brace_match.group(0)
                 except:
                     pass
-            
+
             # If all else fails, return empty object
             print("Warning: Could not extract valid JSON, returning empty object")
             return "{}"
-    
-    def _synthesize_comprehensive_content(self, section_type: str, full_paper_text: str, title: str, abstract: str) -> Dict[str, Any]:
+
+    def _synthesize_comprehensive_content(
+        self, section_type: str, full_paper_text: str, title: str, abstract: str
+    ) -> Dict[str, Any]:
         """Synthesize comprehensive section content with both narrative and structured data"""
         if not self.force_synthesis:
             return {}
-        
-        print(f"    🤖 Synthesizing comprehensive {section_type} content based on full paper...")
-        
+
+        print(
+            f"    🤖 Synthesizing comprehensive {section_type} content based on full paper..."
+        )
+
         # Create a comprehensive context from the full paper
         paper_summary = f"""
 Title: {title}
@@ -236,7 +263,7 @@ Abstract: {abstract}
 Full Paper Content (first 8000 chars):
 {full_paper_text[:8000]}
 """
-        
+
         synthesis_prompts = {
             "introduction": {
                 "system": "You are an expert at analyzing scientific papers. Generate both structured data and narrative content for the introduction section.",
@@ -276,9 +303,8 @@ Respond with JSON containing:
         "conceptual_novelty": "New ideas or frameworks"
     }},
     "synthesis_note": "Comprehensive introduction synthesized from full paper analysis"
-}}"""
+}}""",
             },
-            
             "hypothesis": {
                 "system": "You are an expert at analyzing scientific hypotheses. Generate both structured data and narrative content for the hypothesis section.",
                 "user": f"""Based on this complete scientific paper, analyze the hypothesis and provide comprehensive content in JSON format:
@@ -316,9 +342,8 @@ Respond with JSON containing:
     "specific_predictions": ["Specific prediction 1", "Specific prediction 2"],
     "alternative_hypotheses": ["Alternative explanation 1", "Alternative explanation 2"],
     "synthesis_note": "Comprehensive hypothesis synthesized from full paper analysis"
-}}"""
+}}""",
             },
-            
             "methods": {
                 "system": "You are an expert in experimental methodology. Generate both structured data and narrative content for the methods section.",
                 "user": f"""Based on this complete scientific paper, analyze the methods and provide comprehensive content in JSON format:
@@ -362,9 +387,8 @@ Respond with JSON containing:
         "significance_level": "Alpha level used"
     }},
     "synthesis_note": "Comprehensive methods synthesized from full paper analysis"
-}}"""
+}}""",
             },
-            
             "results": {
                 "system": "You are an expert at analyzing scientific results. Generate both structured data and narrative content for the results section.",
                 "user": f"""Based on this complete scientific paper, analyze the results and provide comprehensive content in JSON format:
@@ -405,9 +429,8 @@ Respond with JSON containing:
         }}
     ],
     "synthesis_note": "Comprehensive results synthesized from full paper analysis"
-}}"""
+}}""",
             },
-            
             "discussion": {
                 "system": "You are an expert at scientific interpretation and discussion. Generate both structured data and narrative content for the discussion section.",
                 "user": f"""Based on this complete scientific paper, analyze the discussion and provide comprehensive content in JSON format:
@@ -447,9 +470,8 @@ Respond with JSON containing:
         "policy_considerations": "Policy implications if applicable"
     }},
     "synthesis_note": "Comprehensive discussion synthesized from full paper analysis"
-}}"""
+}}""",
             },
-            
             "theory_computational": {
                 "system": "You are an expert in theoretical frameworks and computational methods. Generate both structured data and narrative content for theory/computational sections.",
                 "user": f"""Based on this complete scientific paper, analyze the theoretical and computational aspects and provide comprehensive content in JSON format:
@@ -492,111 +514,145 @@ Respond with JSON containing:
         "accuracy_metrics": "Measures of model accuracy"
     }},
     "synthesis_note": "Comprehensive theory/computational content synthesized from full paper analysis"
-}}"""
-            }
+}}""",
+            },
         }
-        
+
         if section_type not in synthesis_prompts:
-            return {"synthesis_note": f"No synthesis template available for {section_type}"}
-        
+            return {
+                "synthesis_note": f"No synthesis template available for {section_type}"
+            }
+
         prompt_config = synthesis_prompts[section_type]
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": prompt_config["system"]},
-                    {"role": "user", "content": prompt_config["user"]}
+                    {"role": "user", "content": prompt_config["user"]},
                 ],
                 temperature=0.3,
-                max_tokens=4000  # Increased for comprehensive narratives
+                max_tokens=4000,  # Increased for comprehensive narratives
             )
-            
+
             response_text = response.choices[0].message.content
             cleaned_text = self._clean_json_response(response_text)
-            
+
             if cleaned_text and cleaned_text != "{}":
                 try:
                     # Parse the JSON response which should contain both narrative and structured data
                     result = json.loads(cleaned_text)
                     # Ensure synthesis note is present
                     if "synthesis_note" not in result:
-                        result["synthesis_note"] = f"Comprehensive {section_type} synthesized from full paper analysis"
+                        result["synthesis_note"] = (
+                            f"Comprehensive {section_type} synthesized from full paper analysis"
+                        )
                     return result
                 except json.JSONDecodeError as e:
                     print(f"    ⚠️  JSON parsing error in synthesis: {e}")
                     # Fallback: treat as narrative content
                     return {
                         "narrative": response_text.strip(),
-                        "synthesis_note": f"Comprehensive {section_type} synthesized from full paper analysis (fallback)"
+                        "synthesis_note": f"Comprehensive {section_type} synthesized from full paper analysis (fallback)",
                     }
             else:
                 print(f"    ⚠️  Synthesis failed for {section_type}, using fallback")
-                return {"synthesis_note": f"Synthesis attempted but failed for {section_type}"}
-                
+                return {
+                    "synthesis_note": f"Synthesis attempted but failed for {section_type}"
+                }
+
         except Exception as e:
             print(f"    ⚠️  Synthesis error for {section_type}: {e}")
             return {"synthesis_note": f"Synthesis failed due to error: {str(e)}"}
-    
-    def _post_process_sections_for_synthesis(self, paper_structure: 'PaperStructure', full_text: str) -> 'PaperStructure':
+
+    def _post_process_sections_for_synthesis(
+        self, paper_structure: "PaperStructure", full_text: str
+    ) -> "PaperStructure":
         """Post-process all sections to replace fallback content with synthesis when force_synthesis is enabled"""
         if not self.force_synthesis:
             return paper_structure
-        
+
         print("  🤖 Post-processing sections for synthesis...")
-        
+
         fallback_indicators = [
-            "could not extract", "not available", "not provided", "not specified", 
-            "not found", "unable to", "error during", "could not determine"
+            "could not extract",
+            "not available",
+            "not provided",
+            "not specified",
+            "not found",
+            "unable to",
+            "error during",
+            "could not determine",
         ]
-        
+
         def needs_synthesis(content):
             """Check if content contains fallback indicators"""
             if isinstance(content, str):
-                return any(indicator in content.lower() for indicator in fallback_indicators)
+                return any(
+                    indicator in content.lower() for indicator in fallback_indicators
+                )
             elif isinstance(content, dict):
                 return any(needs_synthesis(v) for v in content.values())
             elif isinstance(content, list):
                 return any(needs_synthesis(item) for item in content)
             return False
-        
+
         # Check and synthesize hypothesis section
         if needs_synthesis(paper_structure.hypothesis):
-            synthesized = self._synthesize_comprehensive_content("hypothesis", full_text, paper_structure.title, paper_structure.abstract)
+            synthesized = self._synthesize_comprehensive_content(
+                "hypothesis", full_text, paper_structure.title, paper_structure.abstract
+            )
             if synthesized and synthesized != {}:
                 # Replace the entire section with synthesized content
                 paper_structure.hypothesis = synthesized
-        
+
         # Check and synthesize theory/computational section
         if needs_synthesis(paper_structure.theory_computational):
-            synthesized = self._synthesize_comprehensive_content("theory_computational", full_text, paper_structure.title, paper_structure.abstract)
+            synthesized = self._synthesize_comprehensive_content(
+                "theory_computational",
+                full_text,
+                paper_structure.title,
+                paper_structure.abstract,
+            )
             if synthesized and synthesized != {}:
                 paper_structure.theory_computational = synthesized
-        
+
         # Check and synthesize methods section
         if needs_synthesis(paper_structure.methods):
-            synthesized = self._synthesize_comprehensive_content("methods", full_text, paper_structure.title, paper_structure.abstract)
+            synthesized = self._synthesize_comprehensive_content(
+                "methods", full_text, paper_structure.title, paper_structure.abstract
+            )
             if synthesized and synthesized != {}:
                 paper_structure.methods = synthesized
-        
+
         # Check and synthesize results section
         if needs_synthesis(paper_structure.results):
-            synthesized = self._synthesize_comprehensive_content("results", full_text, paper_structure.title, paper_structure.abstract)
+            synthesized = self._synthesize_comprehensive_content(
+                "results", full_text, paper_structure.title, paper_structure.abstract
+            )
             if synthesized and synthesized != {}:
                 paper_structure.results = synthesized
-        
+
         # Check and synthesize introduction section
         if needs_synthesis(paper_structure.introduction):
-            synthesized = self._synthesize_comprehensive_content("introduction", full_text, paper_structure.title, paper_structure.abstract)
+            synthesized = self._synthesize_comprehensive_content(
+                "introduction",
+                full_text,
+                paper_structure.title,
+                paper_structure.abstract,
+            )
             if synthesized and synthesized != {}:
                 paper_structure.introduction = synthesized
-        
+
         # Check and synthesize discussion section
         if needs_synthesis(paper_structure.discussion):
-            synthesized = self._synthesize_comprehensive_content("discussion", full_text, paper_structure.title, paper_structure.abstract)
+            synthesized = self._synthesize_comprehensive_content(
+                "discussion", full_text, paper_structure.title, paper_structure.abstract
+            )
             if synthesized and synthesized != {}:
                 paper_structure.discussion = synthesized
-        
+
         # Synthesize abstract if missing or poor quality
         if not paper_structure.abstract or len(paper_structure.abstract.strip()) < 50:
             print("    🤖 Synthesizing abstract...")
@@ -604,137 +660,178 @@ Respond with JSON containing:
                 response = self.client.chat.completions.create(
                     model=self.openai_model,
                     messages=[
-                        {"role": "system", "content": "You are an expert at writing scientific abstracts. Create a concise, informative abstract based on the paper content."},
-                        {"role": "user", "content": f"Create a comprehensive abstract (200-300 words) for this scientific paper:\n\n{full_text[:3000]}"}
+                        {
+                            "role": "system",
+                            "content": "You are an expert at writing scientific abstracts. Create a concise, informative abstract based on the paper content.",
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Create a comprehensive abstract (200-300 words) for this scientific paper:\n\n{full_text[:3000]}",
+                        },
                     ],
                     temperature=0.2,
-                    max_tokens=400
+                    max_tokens=400,
                 )
                 synthesized_abstract = response.choices[0].message.content.strip()
                 if synthesized_abstract and len(synthesized_abstract) > 50:
                     paper_structure.abstract = synthesized_abstract
             except Exception as e:
                 print(f"    ⚠️  Abstract synthesis failed: {e}")
-        
+
         # Synthesize conclusion if missing
-        if not paper_structure.conclusion or "could not" in paper_structure.conclusion.lower():
+        if (
+            not paper_structure.conclusion
+            or "could not" in paper_structure.conclusion.lower()
+        ):
             print("    🤖 Synthesizing conclusion...")
             try:
                 response = self.client.chat.completions.create(
                     model=self.openai_model,
                     messages=[
-                        {"role": "system", "content": "You are an expert at writing scientific conclusions. Create a concise conclusion based on the paper content."},
-                        {"role": "user", "content": f"Create a comprehensive conclusion for this scientific paper based on the content:\n\n{full_text[:3000]}"}
+                        {
+                            "role": "system",
+                            "content": "You are an expert at writing scientific conclusions. Create a concise conclusion based on the paper content.",
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Create a comprehensive conclusion for this scientific paper based on the content:\n\n{full_text[:3000]}",
+                        },
                     ],
                     temperature=0.2,
-                    max_tokens=300
+                    max_tokens=300,
                 )
                 synthesized_conclusion = response.choices[0].message.content.strip()
                 if synthesized_conclusion:
                     paper_structure.conclusion = synthesized_conclusion
             except Exception as e:
                 print(f"    ⚠️  Conclusion synthesis failed: {e}")
-        
+
         return paper_structure
-    
-    def _validate_and_parse_json(self, response_text: str, section_name: str, fallback_structure: Dict[str, Any], 
-                                paper_context: str = "", section_type: str = "") -> Dict[str, Any]:
+
+    def _validate_and_parse_json(
+        self,
+        response_text: str,
+        section_name: str,
+        fallback_structure: Dict[str, Any],
+        paper_context: str = "",
+        section_type: str = "",
+    ) -> Dict[str, Any]:
         """Validate and parse JSON response with comprehensive error handling and synthesis option"""
         try:
             if not response_text or not response_text.strip():
                 print(f"Warning: Empty response received from model for {section_name}")
                 if self.force_synthesis and paper_context and section_type:
-                    return self._synthesize_missing_content(section_name, paper_context, section_type)
+                    return self._synthesize_missing_content(
+                        section_name, paper_context, section_type
+                    )
                 return fallback_structure
-            
+
             cleaned_text = self._clean_json_response(response_text)
-            
+
             if not cleaned_text or cleaned_text == "{}":
-                print(f"Warning: Empty or invalid JSON received from model for {section_name}")
+                print(
+                    f"Warning: Empty or invalid JSON received from model for {section_name}"
+                )
                 if self.force_synthesis and paper_context and section_type:
-                    return self._synthesize_missing_content(section_name, paper_context, section_type)
+                    return self._synthesize_missing_content(
+                        section_name, paper_context, section_type
+                    )
                 return fallback_structure
-            
+
             parsed_json = json.loads(cleaned_text)
             return parsed_json
-            
+
         except json.JSONDecodeError as e:
             print(f"JSON parsing error in {section_name}: {e}")
             print(f"First 200 characters of response: {response_text[:200]}")
-            print(f"Attempted to parse: {cleaned_text[:200] if 'cleaned_text' in locals() else 'No cleaned text available'}")
+            print(
+                f"Attempted to parse: {cleaned_text[:200] if 'cleaned_text' in locals() else 'No cleaned text available'}"
+            )
             if self.force_synthesis and paper_context and section_type:
-                return self._synthesize_missing_content(section_name, paper_context, section_type)
-            return {**fallback_structure, "analysis_notes": [f"JSON parsing error: {str(e)}"]}
+                return self._synthesize_missing_content(
+                    section_name, paper_context, section_type
+                )
+            return {
+                **fallback_structure,
+                "analysis_notes": [f"JSON parsing error: {str(e)}"],
+            }
         except Exception as e:
             print(f"Error processing {section_name}: {e}")
             if self.force_synthesis and paper_context and section_type:
-                return self._synthesize_missing_content(section_name, paper_context, section_type)
-            return {**fallback_structure, "analysis_notes": [f"Error during {section_name}: {str(e)}"]}
-    
+                return self._synthesize_missing_content(
+                    section_name, paper_context, section_type
+                )
+            return {
+                **fallback_structure,
+                "analysis_notes": [f"Error during {section_name}: {str(e)}"],
+            }
+
     def _chunk_text(self, text: str, max_chars: int = 15000) -> List[str]:
         """Split text into manageable chunks for AI processing"""
         if len(text) <= max_chars:
             return [text]
-        
+
         chunks = []
         start = 0
-        
+
         while start < len(text):
             end = start + max_chars
-            
+
             if end >= len(text):
                 chunks.append(text[start:])
                 break
-            
+
             # Try to break at a reasonable point
-            break_point = text.rfind('\n\n', start, end)
+            break_point = text.rfind("\n\n", start, end)
             if break_point == -1:
-                break_point = text.rfind('\n', start, end)
+                break_point = text.rfind("\n", start, end)
             if break_point == -1:
-                break_point = text.rfind('. ', start, end)
+                break_point = text.rfind(". ", start, end)
             if break_point == -1:
                 break_point = end
-            
+
             chunks.append(text[start:break_point])
             start = break_point
-        
+
         return chunks
-    
+
     def _parse_text_response_for_basic_info(self, response_text: str) -> Dict[str, Any]:
         """Parse non-JSON response text to extract basic paper information"""
         # Simple text parsing fallback
-        lines = response_text.split('\n')
-        
+        lines = response_text.split("\n")
+
         title = "Unknown Title"
         abstract = ""
         keywords = []
         authors = []
-        
+
         # Try to find title, abstract, etc. in the text response
         for i, line in enumerate(lines):
             line = line.strip()
-            if 'title' in line.lower() and ':' in line:
-                title = line.split(':', 1)[1].strip().strip('"')
-            elif 'abstract' in line.lower() and ':' in line:
-                abstract = line.split(':', 1)[1].strip().strip('"')
-            elif 'keyword' in line.lower() and ':' in line:
-                keywords_text = line.split(':', 1)[1].strip()
-                keywords = [kw.strip().strip('"') for kw in keywords_text.split(',')]
-        
+            if "title" in line.lower() and ":" in line:
+                title = line.split(":", 1)[1].strip().strip('"')
+            elif "abstract" in line.lower() and ":" in line:
+                abstract = line.split(":", 1)[1].strip().strip('"')
+            elif "keyword" in line.lower() and ":" in line:
+                keywords_text = line.split(":", 1)[1].strip()
+                keywords = [kw.strip().strip('"') for kw in keywords_text.split(",")]
+
         return {
             "title": title,
             "abstract": abstract,
             "keywords": keywords,
             "authors": authors,
             "affiliations": [],
-            "extraction_notes": [f"Parsed from non-JSON response: {response_text[:100]}..."]
+            "extraction_notes": [
+                f"Parsed from non-JSON response: {response_text[:100]}..."
+            ],
         }
-    
+
     def _generate_keywords(self, title: str, abstract: str, text: str) -> List[str]:
         """Generate keywords if they are missing from the paper"""
-        
+
         system_prompt = """You are an expert at generating scientific keywords for research papers. Generate relevant, specific keywords that capture the main concepts, methods, and subject areas of the paper."""
-        
+
         user_prompt = f"""
 Generate 5-8 relevant scientific keywords for this research paper based on its title, abstract, and content. 
 
@@ -759,42 +856,103 @@ Respond in JSON format:
     "generation_notes": ["Any observations about keyword selection"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,  # Slightly higher for more creative keyword generation
-                max_tokens=1000
+                max_tokens=1000,
             )
-            
+
             response_text = response.choices[0].message.content
-            fallback_structure = {
-                "keywords": []
-            }
-            
-            result = self._validate_and_parse_json(response_text, "keyword generation", fallback_structure)
-            return result.get('keywords', [])
-            
+            fallback_structure = {"keywords": []}
+
+            result = self._validate_and_parse_json(
+                response_text, "keyword generation", fallback_structure
+            )
+            return result.get("keywords", [])
+
         except Exception as e:
             print(f"Error generating keywords: {e}")
             # Fallback: simple keyword extraction from title and abstract
             import re
+
             text_for_keywords = f"{title} {abstract}".lower()
             # Simple extraction of potential keywords (words 4+ chars, not common words)
-            words = re.findall(r'\b[a-z]{4,}\b', text_for_keywords)
-            common_words = {'this', 'that', 'with', 'from', 'they', 'were', 'been', 'have', 'their', 'said', 'each', 'which', 'what', 'about', 'would', 'there', 'could', 'other', 'after', 'first', 'well', 'many', 'some', 'time', 'very', 'when', 'much', 'new', 'two', 'may', 'way', 'who', 'its', 'now', 'find', 'long', 'down', 'day', 'did', 'get', 'has', 'her', 'his', 'how', 'man', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use'}
+            words = re.findall(r"\b[a-z]{4,}\b", text_for_keywords)
+            common_words = {
+                "this",
+                "that",
+                "with",
+                "from",
+                "they",
+                "were",
+                "been",
+                "have",
+                "their",
+                "said",
+                "each",
+                "which",
+                "what",
+                "about",
+                "would",
+                "there",
+                "could",
+                "other",
+                "after",
+                "first",
+                "well",
+                "many",
+                "some",
+                "time",
+                "very",
+                "when",
+                "much",
+                "new",
+                "two",
+                "may",
+                "way",
+                "who",
+                "its",
+                "now",
+                "find",
+                "long",
+                "down",
+                "day",
+                "did",
+                "get",
+                "has",
+                "her",
+                "his",
+                "how",
+                "man",
+                "old",
+                "see",
+                "two",
+                "way",
+                "who",
+                "boy",
+                "did",
+                "its",
+                "let",
+                "put",
+                "say",
+                "she",
+                "too",
+                "use",
+            }
             keywords = [word for word in set(words) if word not in common_words][:6]
             return keywords if keywords else ["research", "analysis", "study"]
 
     def _analyze_basic_structure(self, text: str) -> Dict[str, Any]:
         """Extract basic paper structure (title, abstract, keywords)"""
-        
+
         system_prompt = """You are an expert at analyzing scientific papers. Extract the basic structure and metadata from the given text."""
-        
+
         user_prompt = f"""
 Analyze this scientific paper text and extract the following basic information:
 
@@ -816,45 +974,47 @@ Respond in JSON format:
     "extraction_notes": ["Any issues or observations about the extraction"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=2000
+                max_tokens=2000,
             )
-            
+
             response_text = response.choices[0].message.content
-            
+
             # Try to parse as JSON first
             try:
                 cleaned_text = self._clean_json_response(response_text)
                 return json.loads(cleaned_text)
             except json.JSONDecodeError:
                 # If not JSON, use fallback text parsing
-                print(f"Warning: Model returned non-JSON response, attempting text parsing...")
+                print(
+                    f"Warning: Model returned non-JSON response, attempting text parsing..."
+                )
                 return self._parse_text_response_for_basic_info(response_text)
-            
+
         except Exception as e:
             print(f"Error analyzing basic structure: {e}")
             return {
-                "title": "Unknown Title", 
+                "title": "Unknown Title",
                 "abstract": "",
                 "keywords": [],
                 "authors": [],
                 "affiliations": [],
-                "extraction_notes": [f"Error during extraction: {str(e)}"]
+                "extraction_notes": [f"Error during extraction: {str(e)}"],
             }
-    
+
     def _analyze_hypothesis_section(self, text: str) -> Dict[str, Any]:
         """Analyze and extract enhanced hypothesis information"""
-        
+
         system_prompt = """You are an expert scientific analyst specializing in hypothesis formulation and analysis. Your task is to identify, formalize, and analyze hypotheses in scientific papers with deep understanding of scientific methodology."""
-        
+
         user_prompt = f"""
 Analyze this scientific paper for hypothesis-related content. Provide a comprehensive analysis including:
 
@@ -933,38 +1093,52 @@ Respond in detailed JSON format:
     "analysis_notes": ["Any important observations about the hypothesis analysis"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=3000
+                max_tokens=3000,
             )
-            
+
             response_text = response.choices[0].message.content
             fallback_structure = {
-                "main_hypothesis": {"statement": "Could not extract hypothesis", "formal_notation": "", "null_hypothesis": ""},
-                "analysis_notes": ["Error during hypothesis analysis"]
+                "main_hypothesis": {
+                    "statement": "Could not extract hypothesis",
+                    "formal_notation": "",
+                    "null_hypothesis": "",
+                },
+                "analysis_notes": ["Error during hypothesis analysis"],
             }
-            
-            return self._validate_and_parse_json(response_text, "hypothesis analysis", fallback_structure, text, "hypothesis")
-            
+
+            return self._validate_and_parse_json(
+                response_text,
+                "hypothesis analysis",
+                fallback_structure,
+                text,
+                "hypothesis",
+            )
+
         except Exception as e:
             print(f"Error analyzing hypothesis section: {e}")
             return {
-                "main_hypothesis": {"statement": "Could not extract hypothesis", "formal_notation": "", "null_hypothesis": ""},
-                "analysis_notes": [f"Error during hypothesis analysis: {str(e)}"]
+                "main_hypothesis": {
+                    "statement": "Could not extract hypothesis",
+                    "formal_notation": "",
+                    "null_hypothesis": "",
+                },
+                "analysis_notes": [f"Error during hypothesis analysis: {str(e)}"],
             }
-    
+
     def _analyze_theory_computational_section(self, text: str) -> Dict[str, Any]:
         """Analyze theoretical basis and computational methods"""
-        
+
         system_prompt = """You are an expert in theoretical frameworks and computational methods in scientific research. Analyze the theoretical foundations and computational approaches used in this paper."""
-        
+
         user_prompt = f"""
 Analyze this scientific paper for theoretical foundations and computational methods. Provide comprehensive analysis of:
 
@@ -1027,38 +1201,50 @@ Respond in detailed JSON format:
     "analysis_notes": ["Any important observations about computational analysis"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=3000
+                max_tokens=3000,
             )
-            
+
             response_text = response.choices[0].message.content
             fallback_structure = {
-                "theoretical_framework": {"theoretical_basis_description": "Could not extract theoretical information"},
-                "analysis_notes": ["Error during theory/computational analysis"]
+                "theoretical_framework": {
+                    "theoretical_basis_description": "Could not extract theoretical information"
+                },
+                "analysis_notes": ["Error during theory/computational analysis"],
             }
-            
-            return self._validate_and_parse_json(response_text, "theory/computational analysis", fallback_structure, text, "theory_computational")
-            
+
+            return self._validate_and_parse_json(
+                response_text,
+                "theory/computational analysis",
+                fallback_structure,
+                text,
+                "theory_computational",
+            )
+
         except Exception as e:
             print(f"Error analyzing theory/computational section: {e}")
             return {
-                "theoretical_framework": {"theoretical_basis_description": "Could not extract theoretical information"},
-                "analysis_notes": [f"Error during theory/computational analysis: {str(e)}"]
+                "theoretical_framework": {
+                    "theoretical_basis_description": "Could not extract theoretical information"
+                },
+                "analysis_notes": [
+                    f"Error during theory/computational analysis: {str(e)}"
+                ],
             }
-    
+
     def _analyze_methods_section(self, text: str) -> Dict[str, Any]:
         """Deep analysis of experimental protocols and methods"""
-        
+
         system_prompt = """You are an expert in experimental design and methodology. Provide a comprehensive analysis of the experimental protocols, methods, and procedures used in this scientific paper."""
-        
+
         user_prompt = f"""
 Provide a deep analysis of the experimental methods and protocols in this paper. Focus on:
 
@@ -1171,38 +1357,40 @@ Respond in detailed JSON format:
     "analysis_notes": ["Important observations about methods analysis"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=4000
+                max_tokens=4000,
             )
-            
+
             response_text = response.choices[0].message.content
             fallback_structure = {
                 "experimental_design": {"study_type": "Could not determine"},
-                "analysis_notes": ["Error during methods analysis"]
+                "analysis_notes": ["Error during methods analysis"],
             }
-            
-            return self._validate_and_parse_json(response_text, "methods analysis", fallback_structure, text, "methods")
-            
+
+            return self._validate_and_parse_json(
+                response_text, "methods analysis", fallback_structure, text, "methods"
+            )
+
         except Exception as e:
             print(f"Error analyzing methods section: {e}")
             return {
                 "experimental_design": {"study_type": "Could not determine"},
-                "analysis_notes": [f"Error during methods analysis: {str(e)}"]
+                "analysis_notes": [f"Error during methods analysis: {str(e)}"],
             }
-    
+
     def _analyze_introduction_section(self, text: str) -> Dict[str, Any]:
         """Analyze introduction section for context and background"""
-        
+
         system_prompt = """You are an expert at analyzing scientific paper introductions. Extract and analyze the introduction section to understand the research context, background, and motivation."""
-        
+
         user_prompt = f"""
 Analyze the introduction section of this scientific paper. Provide comprehensive analysis of:
 
@@ -1261,40 +1449,48 @@ Respond in detailed JSON format:
     "analysis_notes": ["Important observations about the introduction"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=3000
+                max_tokens=3000,
             )
-            
+
             response_text = response.choices[0].message.content
             fallback_structure = {
                 "research_context": {"field": "Could not extract"},
                 "problem_statement": {"main_problem": "Could not extract"},
-                "analysis_notes": ["Error during introduction analysis"]
+                "analysis_notes": ["Error during introduction analysis"],
             }
-            
-            return self._validate_and_parse_json(response_text, "introduction analysis", fallback_structure, text, "introduction")
-            
+
+            return self._validate_and_parse_json(
+                response_text,
+                "introduction analysis",
+                fallback_structure,
+                text,
+                "introduction",
+            )
+
         except Exception as e:
             print(f"Error analyzing introduction section: {e}")
             return {
                 "research_context": {"field": "Could not extract"},
                 "problem_statement": {"main_problem": "Could not extract"},
-                "analysis_notes": [f"Error during introduction analysis: {str(e)}"]
+                "analysis_notes": [f"Error during introduction analysis: {str(e)}"],
             }
-    
-    def _analyze_discussion_section(self, text: str, hypothesis_info: Dict[str, Any], results_info: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _analyze_discussion_section(
+        self, text: str, hypothesis_info: Dict[str, Any], results_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Analyze discussion section for interpretation and implications"""
-        
+
         system_prompt = """You are an expert at analyzing scientific paper discussions. Analyze how authors interpret their results, discuss implications, and relate findings to the broader field."""
-        
+
         user_prompt = f"""
 Analyze the discussion section of this scientific paper. Consider the hypothesis and results context provided. Focus on:
 
@@ -1366,40 +1562,50 @@ Respond in detailed JSON format:
     "analysis_notes": ["Important observations about the discussion"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=4000
+                max_tokens=4000,
             )
-            
+
             response_text = response.choices[0].message.content
             fallback_structure = {
-                "results_interpretation": {"main_findings_interpretation": "Could not extract"},
+                "results_interpretation": {
+                    "main_findings_interpretation": "Could not extract"
+                },
                 "implications": {"theoretical_implications": []},
-                "analysis_notes": ["Error during discussion analysis"]
+                "analysis_notes": ["Error during discussion analysis"],
             }
-            
-            return self._validate_and_parse_json(response_text, "discussion analysis", fallback_structure, text, "discussion")
-            
+
+            return self._validate_and_parse_json(
+                response_text,
+                "discussion analysis",
+                fallback_structure,
+                text,
+                "discussion",
+            )
+
         except Exception as e:
             print(f"Error analyzing discussion section: {e}")
             return {
-                "results_interpretation": {"main_findings_interpretation": "Could not extract"},
+                "results_interpretation": {
+                    "main_findings_interpretation": "Could not extract"
+                },
                 "implications": {"theoretical_implications": []},
-                "analysis_notes": [f"Error during discussion analysis: {str(e)}"]
+                "analysis_notes": [f"Error during discussion analysis: {str(e)}"],
             }
-    
+
     def _analyze_conclusion_section(self, text: str) -> str:
         """Extract and analyze conclusion section"""
-        
+
         system_prompt = """You are an expert at analyzing scientific paper conclusions. Extract the conclusion and summarize the key takeaways."""
-        
+
         user_prompt = f"""
 Extract and analyze the conclusion section of this scientific paper. Provide a clear, comprehensive summary that captures:
 
@@ -1414,30 +1620,30 @@ Paper Text:
 
 Respond with a well-structured conclusion summary that preserves the authors' key messages while being clear and comprehensive. Do not use JSON format - provide a natural text summary.
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=1500
+                max_tokens=1500,
             )
-            
+
             response_text = response.choices[0].message.content
             return response_text.strip()
-            
+
         except Exception as e:
             print(f"Error analyzing conclusion section: {e}")
             return f"Could not extract conclusion. Error: {str(e)}"
-    
+
     def _extract_acknowledgments_section(self, text: str) -> str:
         """Extract acknowledgments section"""
-        
+
         system_prompt = """You are an expert at extracting acknowledgments from scientific papers. Find and extract the acknowledgments section."""
-        
+
         user_prompt = f"""
 Extract the acknowledgments section from this scientific paper. Look for sections typically titled:
 - Acknowledgments
@@ -1452,30 +1658,30 @@ Paper Text:
 
 If found, provide the complete acknowledgments text. If not found, respond with "No acknowledgments section found." Do not use JSON format - provide the raw acknowledgments text.
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=1000
+                max_tokens=1000,
             )
-            
+
             response_text = response.choices[0].message.content
             return response_text.strip()
-            
+
         except Exception as e:
             print(f"Error extracting acknowledgments: {e}")
             return f"Could not extract acknowledgments. Error: {str(e)}"
-    
+
     def _extract_references_section(self, text: str) -> List[str]:
         """Extract references/bibliography section"""
-        
+
         system_prompt = """You are an expert at extracting references from scientific papers. Find and parse the references section."""
-        
+
         user_prompt = f"""
 Extract the references/bibliography section from this scientific paper. Look for sections typically titled:
 - References
@@ -1498,35 +1704,37 @@ Respond in JSON format:
     "extraction_notes": ["Any issues or observations"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=3000
+                max_tokens=3000,
             )
-            
+
             response_text = response.choices[0].message.content
-            fallback_structure = {
-                "references": [f"Could not extract references"]
-            }
-            
-            result = self._validate_and_parse_json(response_text, "references extraction", fallback_structure)
-            return result.get('references', [])
-            
+            fallback_structure = {"references": [f"Could not extract references"]}
+
+            result = self._validate_and_parse_json(
+                response_text, "references extraction", fallback_structure
+            )
+            return result.get("references", [])
+
         except Exception as e:
             print(f"Error extracting references: {e}")
             return [f"Could not extract references. Error: {str(e)}"]
 
-    def _analyze_results_section(self, text: str, hypothesis_info: Dict[str, Any]) -> Dict[str, Any]:
+    def _analyze_results_section(
+        self, text: str, hypothesis_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Analyze results with focus on hypothesis validation"""
-        
+
         system_prompt = """You are an expert at analyzing scientific results and their relationship to hypotheses. Determine whether results support or contradict hypotheses and identify new hypotheses that emerge."""
-        
+
         user_prompt = f"""
 Analyze the results section of this paper with special focus on hypothesis validation. Consider the hypothesis information provided and determine:
 
@@ -1625,111 +1833,118 @@ Respond in detailed JSON format:
     "analysis_notes": ["Important observations about results analysis"]
 }}
 """
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.openai_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=4000
+                max_tokens=4000,
             )
-            
+
             response_text = response.choices[0].message.content
             fallback_structure = {
                 "hypothesis_validation": {"main_hypothesis_supported": "unknown"},
-                "analysis_notes": ["Error during results analysis"]
+                "analysis_notes": ["Error during results analysis"],
             }
-            
-            return self._validate_and_parse_json(response_text, "results analysis", fallback_structure, text, "results")
-            
+
+            return self._validate_and_parse_json(
+                response_text, "results analysis", fallback_structure, text, "results"
+            )
+
         except Exception as e:
             print(f"Error analyzing results section: {e}")
             return {
                 "hypothesis_validation": {"main_hypothesis_supported": "unknown"},
-                "analysis_notes": [f"Error during results analysis: {str(e)}"]
+                "analysis_notes": [f"Error during results analysis: {str(e)}"],
             }
-    
+
     def analyze_paper(self, pdf_path: str) -> Optional[PaperStructure]:
         """Analyze a complete scientific paper and extract structured information"""
-        
+
         print(f"Analyzing paper: {pdf_path}")
-        
+
         # Extract text from PDF
         text = self._extract_text_from_pdf(pdf_path)
         if not text.strip():
             print(f"Warning: No text extracted from {pdf_path}")
             return None
-        
+
         # Generate paper ID from file path
         paper_id = hashlib.md5(str(pdf_path).encode()).hexdigest()
-        
+
         processing_notes = []
-        
+
         try:
             # Analyze basic structure
             print("  Extracting basic structure...")
             basic_info = self._analyze_basic_structure(text)
-            
+
             # Generate keywords if missing
-            keywords = basic_info.get('keywords', [])
+            keywords = basic_info.get("keywords", [])
             if not keywords or len(keywords) == 0:
                 print("  No keywords found, generating keywords...")
-                title = basic_info.get('title', '')
-                abstract = basic_info.get('abstract', '')
+                title = basic_info.get("title", "")
+                abstract = basic_info.get("abstract", "")
                 generated_keywords = self._generate_keywords(title, abstract, text)
-                basic_info['keywords'] = generated_keywords
-                basic_info['extraction_notes'] = basic_info.get('extraction_notes', []) + [f"Generated {len(generated_keywords)} keywords automatically"]
+                basic_info["keywords"] = generated_keywords
+                basic_info["extraction_notes"] = basic_info.get(
+                    "extraction_notes", []
+                ) + [f"Generated {len(generated_keywords)} keywords automatically"]
                 print(f"  Generated keywords: {', '.join(generated_keywords)}")
             else:
-                print(f"  Found {len(keywords)} existing keywords: {', '.join(keywords[:3])}{'...' if len(keywords) > 3 else ''}")
-            
+                print(
+                    f"  Found {len(keywords)} existing keywords: {', '.join(keywords[:3])}{'...' if len(keywords) > 3 else ''}"
+                )
+
             # Analyze hypothesis section
             print("  Analyzing hypothesis...")
             hypothesis_info = self._analyze_hypothesis_section(text)
-            
+
             # Analyze theory and computational sections
             print("  Analyzing theory and computational methods...")
             theory_comp_info = self._analyze_theory_computational_section(text)
-            
+
             # Analyze methods section
             print("  Analyzing experimental methods...")
             methods_info = self._analyze_methods_section(text)
-            
+
             # Analyze results section with hypothesis validation
             print("  Analyzing results and hypothesis validation...")
             results_info = self._analyze_results_section(text, hypothesis_info)
-            
+
             # Analyze introduction section
             print("  Analyzing introduction...")
             introduction_info = self._analyze_introduction_section(text)
-            
+
             # Analyze discussion section
             print("  Analyzing discussion...")
-            discussion_info = self._analyze_discussion_section(text, hypothesis_info, results_info)
-            
+            discussion_info = self._analyze_discussion_section(
+                text, hypothesis_info, results_info
+            )
+
             # Extract conclusion section
             print("  Extracting conclusion...")
             conclusion_info = self._analyze_conclusion_section(text)
-            
+
             # Extract acknowledgments
             print("  Extracting acknowledgments...")
             acknowledgments_info = self._extract_acknowledgments_section(text)
-            
+
             # Extract references
             print("  Extracting references...")
             references_info = self._extract_references_section(text)
-            
+
             # Create initial paper structure
             paper_structure = PaperStructure(
                 paper_id=paper_id,
                 original_filename=os.path.basename(pdf_path),
-                title=basic_info.get('title', 'Unknown Title'),
-                abstract=basic_info.get('abstract', ''),
-                keywords=basic_info.get('keywords', []),
-                
+                title=basic_info.get("title", "Unknown Title"),
+                abstract=basic_info.get("abstract", ""),
+                keywords=basic_info.get("keywords", []),
                 # Enhanced sections - all now implemented
                 introduction=introduction_info,
                 hypothesis=hypothesis_info,
@@ -1740,59 +1955,64 @@ Respond in detailed JSON format:
                 conclusion=conclusion_info,
                 acknowledgments=acknowledgments_info,
                 references=references_info,
-                
                 # Metadata
                 extraction_timestamp=time.time(),
-                processing_notes=processing_notes + basic_info.get('extraction_notes', [])
+                processing_notes=processing_notes
+                + basic_info.get("extraction_notes", []),
             )
-            
+
             # Post-process for synthesis if force_synthesis is enabled
-            paper_structure = self._post_process_sections_for_synthesis(paper_structure, text)
-            
+            paper_structure = self._post_process_sections_for_synthesis(
+                paper_structure, text
+            )
+
             return paper_structure
-            
+
         except Exception as e:
             print(f"Error analyzing paper {pdf_path}: {e}")
             processing_notes.append(f"Analysis error: {str(e)}")
             return None
 
+
 def save_json_output(paper_structure: PaperStructure, output_dir: str):
     """Save paper structure as JSON file"""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     json_filename = f"{paper_structure.paper_id}.json"
     json_path = output_path / json_filename
-    
-    with open(json_path, 'w', encoding='utf-8') as f:
+
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(asdict(paper_structure), f, indent=2, ensure_ascii=False)
-    
+
     print(f"JSON output saved to: {json_path}")
     return json_path
 
+
 def _get_section_content(section_data: Dict[str, Any], section_type: str) -> str:
     """Get section content, preferring narrative over structured data"""
-    if isinstance(section_data, dict) and 'narrative' in section_data:
+    if isinstance(section_data, dict) and "narrative" in section_data:
         # Use synthesized narrative content
-        content = section_data['narrative']
-        if section_data.get('synthesis_note'):
+        content = section_data["narrative"]
+        if section_data.get("synthesis_note"):
             content += f"\n\n*{section_data['synthesis_note']}*"
         return content
-    
+
     # Fallback to structured content for specific sections
     fallback_generators = {
-        'introduction': lambda data: _generate_structured_introduction(data),
-        'hypothesis': lambda data: _generate_structured_hypothesis(data),
-        'methods': lambda data: _generate_structured_methods(data),
-        'results': lambda data: _generate_structured_results(data),
-        'discussion': lambda data: _generate_structured_discussion(data),
-        'theory_computational': lambda data: _generate_structured_theory(data)
+        "introduction": lambda data: _generate_structured_introduction(data),
+        "hypothesis": lambda data: _generate_structured_hypothesis(data),
+        "methods": lambda data: _generate_structured_methods(data),
+        "results": lambda data: _generate_structured_results(data),
+        "discussion": lambda data: _generate_structured_discussion(data),
+        "theory_computational": lambda data: _generate_structured_theory(data),
     }
-    
+
     if section_type in fallback_generators:
         return fallback_generators[section_type](section_data)
-    
+
     return "Content not available"
+
 
 def _generate_structured_introduction(data: Dict[str, Any]) -> str:
     """Generate structured introduction content"""
@@ -1811,6 +2031,7 @@ def _generate_structured_introduction(data: Dict[str, Any]) -> str:
 - **Methodological:** {data.get('novelty_claims', {}).get('methodological_novelty', 'Not specified')}
 - **Conceptual:** {data.get('novelty_claims', {}).get('conceptual_novelty', 'Not specified')}"""
 
+
 def _generate_structured_hypothesis(data: Dict[str, Any]) -> str:
     """Generate structured hypothesis content"""
     content = f"""### Main Hypothesis
@@ -1822,17 +2043,18 @@ def _generate_structured_hypothesis(data: Dict[str, Any]) -> str:
 
 ### Hypothesis Hallmarks Analysis
 """
-    
+
     # Add hypothesis hallmarks
-    hallmarks = data.get('hypothesis_hallmarks_analysis', {})
+    hallmarks = data.get("hypothesis_hallmarks_analysis", {})
     for criterion, analysis in hallmarks.items():
         if isinstance(analysis, dict):
-            score = analysis.get('score', 'N/A')
-            rationale = analysis.get('rationale', 'Not provided')
+            score = analysis.get("score", "N/A")
+            rationale = analysis.get("rationale", "Not provided")
             content += f"- **{criterion.title()}** ({score}/5): {rationale}\n"
-    
+
     content += f"\n### Theoretical Foundation\n{data.get('theoretical_foundation', 'Not provided')}"
     return content
+
 
 def _generate_structured_methods(data: Dict[str, Any]) -> str:
     """Generate structured methods content"""
@@ -1842,9 +2064,9 @@ def _generate_structured_methods(data: Dict[str, Any]) -> str:
 
 ### Protocols
 """
-    
+
     # Add detailed protocols
-    protocols = data.get('detailed_protocols', [])
+    protocols = data.get("detailed_protocols", [])
     for i, protocol in enumerate(protocols, 1):
         if isinstance(protocol, dict):
             content += f"""
@@ -1853,11 +2075,12 @@ def _generate_structured_methods(data: Dict[str, Any]) -> str:
 
 **Steps:**
 """
-            steps = protocol.get('steps', [])
+            steps = protocol.get("steps", [])
             for step in steps:
                 content += f"- {step}\n"
-    
+
     return content
+
 
 def _generate_structured_results(data: Dict[str, Any]) -> str:
     """Generate structured results content"""
@@ -1868,17 +2091,18 @@ def _generate_structured_results(data: Dict[str, Any]) -> str:
 
 ### Key Findings
 """
-    
+
     # Add key findings
-    findings = data.get('key_findings', [])
+    findings = data.get("key_findings", [])
     for finding in findings:
         if isinstance(finding, dict):
             content += f"""- **{finding.get('finding', 'Unknown finding')}**
   - Significance: {finding.get('significance', 'Not specified')}
   - Unexpected: {finding.get('unexpected', 'Not specified')}
 """
-    
+
     return content
+
 
 def _generate_structured_discussion(data: Dict[str, Any]) -> str:
     """Generate structured discussion content"""
@@ -1897,6 +2121,7 @@ def _generate_structured_discussion(data: Dict[str, Any]) -> str:
 ### Future Directions
 {', '.join(data.get('future_research_directions', []))}"""
 
+
 def _generate_structured_theory(data: Dict[str, Any]) -> str:
     """Generate structured theory/computational content"""
     content = f"""### Theoretical Framework
@@ -1904,34 +2129,42 @@ def _generate_structured_theory(data: Dict[str, Any]) -> str:
 
 ### Mathematical Models
 """
-    
+
     # Add mathematical models
-    equations = data.get('mathematical_models', {}).get('equations', [])
+    equations = data.get("mathematical_models", {}).get("equations", [])
     for eq in equations:
         if isinstance(eq, dict):
             content += f"- **{eq.get('equation', 'N/A')}**: {eq.get('description', 'No description')}\n"
-    
+
     content += f"""
 ### Computational Methods
 **Software Tools:** {', '.join(data.get('computational_methods', {}).get('software_tools', []))}  
 **Programming Languages:** {', '.join(data.get('computational_methods', {}).get('programming_languages', []))}"""
-    
+
     return content
+
 
 def generate_markdown_output(paper_structure: PaperStructure, output_dir: str):
     """Generate human-readable markdown version"""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     md_filename = f"{paper_structure.paper_id}.md"
     md_path = output_path / md_filename
-    
+
     # Check if keywords were generated
-    keywords_generated = any("Generated" in note and "keywords" in note for note in paper_structure.processing_notes)
-    keywords_text = ', '.join(paper_structure.keywords) if paper_structure.keywords else 'None specified'
+    keywords_generated = any(
+        "Generated" in note and "keywords" in note
+        for note in paper_structure.processing_notes
+    )
+    keywords_text = (
+        ", ".join(paper_structure.keywords)
+        if paper_structure.keywords
+        else "None specified"
+    )
     if keywords_generated and paper_structure.keywords:
         keywords_text += " *(AI-generated)*"
-    
+
     markdown_content = f"""# {paper_structure.title}
 
 **Paper ID:** `{paper_structure.paper_id}`  
@@ -1981,94 +2214,118 @@ def generate_markdown_output(paper_structure: PaperStructure, output_dir: str):
 ## References
 
 """
-    
+
     # Add references
-    for i, ref in enumerate(paper_structure.references[:10], 1):  # Limit to first 10 references for readability
+    for i, ref in enumerate(
+        paper_structure.references[:10], 1
+    ):  # Limit to first 10 references for readability
         markdown_content += f"{i}. {ref}\n"
-    
+
     if len(paper_structure.references) > 10:
-        markdown_content += f"... and {len(paper_structure.references) - 10} more references\n"
-    
+        markdown_content += (
+            f"... and {len(paper_structure.references) - 10} more references\n"
+        )
+
     markdown_content += f"""
 ## Processing Notes
 """
-    
+
     for note in paper_structure.processing_notes:
         markdown_content += f"- {note}\n"
-    
+
     # Save markdown file
-    with open(md_path, 'w', encoding='utf-8') as f:
+    with open(md_path, "w", encoding="utf-8") as f:
         f.write(markdown_content)
-    
+
     print(f"Markdown output saved to: {md_path}")
     return md_path
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Scientific Paper Synthesis and Organization Tool")
-    
+    parser = argparse.ArgumentParser(
+        description="Scientific Paper Synthesis and Organization Tool"
+    )
+
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--file', help='Single PDF file to analyze')
-    group.add_argument('--directory', help='Directory containing PDF files')
-    
-    parser.add_argument('--model', required=True, help='Shortname of the OpenAI model (from model_servers.yaml)')
-    parser.add_argument('--output-dir', default='./structured_papers', help='Output directory for results (default: ./structured_papers)')
-    parser.add_argument('--no-markdown', action='store_true', help='Skip markdown output generation')
-    parser.add_argument('--force-synthesis', action='store_true', help='Force synthesis of missing sections using AI model instead of leaving gaps')
-    
+    group.add_argument("--file", help="Single PDF file to analyze")
+    group.add_argument("--directory", help="Directory containing PDF files")
+
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="Shortname of the OpenAI model (from model_servers.yaml)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./structured_papers",
+        help="Output directory for results (default: ./structured_papers)",
+    )
+    parser.add_argument(
+        "--no-markdown", action="store_true", help="Skip markdown output generation"
+    )
+    parser.add_argument(
+        "--force-synthesis",
+        action="store_true",
+        help="Force synthesis of missing sections using AI model instead of leaving gaps",
+    )
+
     args = parser.parse_args()
-    
+
     try:
         # Initialize analyzer
         print(f"Initializing analyzer with model: {args.model}")
         if args.force_synthesis:
-            print("Force synthesis mode enabled - all missing sections will be synthesized")
+            print(
+                "Force synthesis mode enabled - all missing sections will be synthesized"
+            )
         analyzer = PaperAnalyzer(args.model, force_synthesis=args.force_synthesis)
-        
+
         # Collect PDF files
         if args.file:
             pdf_files = [args.file]
         else:
             print(f"Scanning directory: {args.directory}")
             pdf_files = []
-            for file_path in Path(args.directory).rglob('*.pdf'):
+            for file_path in Path(args.directory).rglob("*.pdf"):
                 pdf_files.append(str(file_path))
             print(f"Found {len(pdf_files)} PDF files")
-        
+
         if not pdf_files:
             print("No PDF files found.")
             return
-        
+
         # Process papers
         print(f"Processing {len(pdf_files)} papers...")
-        
+
         for i, pdf_path in enumerate(pdf_files, 1):
             print(f"\nProcessing {i}/{len(pdf_files)}: {os.path.basename(pdf_path)}")
-            
+
             try:
                 # Analyze paper
                 paper_structure = analyzer.analyze_paper(pdf_path)
-                
+
                 if paper_structure:
                     # Save JSON output
                     save_json_output(paper_structure, args.output_dir)
-                    
+
                     # Generate markdown output
                     if not args.no_markdown:
                         generate_markdown_output(paper_structure, args.output_dir)
-                    
+
                     print(f"  ✓ Successfully processed")
                 else:
                     print(f"  ✗ Failed to process")
-                
+
             except Exception as e:
                 print(f"  ✗ Error processing {pdf_path}: {e}")
                 continue
-        
+
         print(f"\nProcessing completed. Results saved to: {args.output_dir}")
-        
+
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
