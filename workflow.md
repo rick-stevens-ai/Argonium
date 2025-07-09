@@ -183,15 +183,18 @@ This workflow provides deep analysis of AI model reasoning processes, generating
 1. **Question Processing**: Extract and analyze multiple-choice questions
 2. **Persona Generation**: Create expert personas for specialized reasoning
 3. **Reasoning Trace Generation**: Generate detailed thought processes for each option
-4. **Prediction Analysis**: Extract and validate model predictions
-5. **Confidence Assessment**: Analyze prediction confidence and calibration
-6. **Meta-Analysis**: Generate comprehensive reasoning performance reports
-7. **Stream-of-Consciousness**: Create coherent internal dialogue narratives
+4. **AI-Powered Grading**: Use dedicated models for semantic answer verification
+5. **Prediction Analysis**: Extract and validate model predictions with grading results
+6. **Confidence Assessment**: Analyze prediction confidence and calibration
+7. **Meta-Analysis**: Generate comprehensive reasoning performance reports
+8. **Stream-of-Consciousness**: Create coherent internal dialogue narratives
 
 #### Specialized Features:
 - **Expert Personas**: Support for microbiologist, physicist, historian, and other specialist perspectives
+- **AI-Powered Grading**: Dedicated models for semantic answer verification instead of regex matching
 - **Detailed Reasoning**: 150-200 word analysis per option with technical depth
-- **Prediction Validation**: Robust extraction and accuracy assessment
+- **Semantic Answer Matching**: Understands answer equivalence ("third option" = "option 3")
+- **Dual Prediction Analysis**: Compare detailed vs. quick reasoning approaches
 - **Confidence Calibration**: Analysis of prediction confidence vs. actual performance
 - **Whole-Trace Analysis**: Meta-cognitive assessment of reasoning patterns
 - **Error Recovery**: Robust parsing with fallback text extraction
@@ -207,6 +210,12 @@ This workflow provides deep analysis of AI model reasoning processes, generating
 ```bash
 # Generate reasoning traces with microbiologist persona
 python reasoning_traces_v6.py questions.json --model gpt41 --specialty microbiologist --max-questions 50 --whole-trace-analysis
+
+# With AI grading model for answer verification
+python reasoning_traces_v6.py questions.json --model gpt41 --grading-model scout --specialty physicist --dual-prediction
+
+# Multiple models for different tasks
+python reasoning_traces_v6.py questions.json --model claude3 --grading-model gpt41 --whole-trace-model scout --specialty microbiologist
 
 # Continue previous analysis
 python reasoning_traces_v6.py questions.json --continue-from previous_results.json --specialty physicist

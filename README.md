@@ -7,12 +7,15 @@ A comprehensive toolkit for scientific literature analysis, AI model evaluation,
 
 ## 🌟 Features
 
-- **📚 Literature Discovery**: Automated paper search, download, and AI-powered relevance filtering
-- **🏷️ Content Classification**: AI-powered categorization using predefined scientific taxonomies
-- **📊 Data Processing**: Comprehensive JSON manipulation and analysis tools
-- **🤖 Model Benchmarking**: Multi-model evaluation with detailed performance analysis
-- **🧠 Reasoning Analysis**: Deep cognitive assessment with expert persona modeling
-- **🔄 Integrated Workflows**: Complete research pipelines from discovery to analysis
+- **📚 Literature Discovery**: Automated paper search, download, and AI-powered relevance filtering with PDF validation
+- **🏷️ Content Classification**: AI-powered categorization using 25+ predefined scientific taxonomies
+- **📊 Data Processing**: Comprehensive JSON manipulation, sampling, and analysis tools with reproducible randomization
+- **🤖 Model Benchmarking**: Multi-model evaluation with parallel processing and availability checks
+- **⚡ Advanced Scoring**: High-performance parallel scoring engine with AI-powered grading
+- **🧠 Reasoning Analysis**: Deep cognitive assessment with expert persona modeling and meta-analysis
+- **📄 Document Processing**: PDF validation, splitting, and integrity checking
+- **🔧 Utility Tools**: Data cleaning, format conversion, and report generation
+- **🔄 Integrated Workflows**: Complete research pipelines from discovery to analysis with automation scripts
 
 ## 🚀 Quick Start
 
@@ -172,7 +175,14 @@ python argonium_score_parallel_v9.py questions.json \
 ### 5. Reasoning Analysis & Validation
 - **Primary Tool**: `reasoning_traces_v6.py`
 - **Workflow Script**: `scripts/reasoning_analysis.sh`
-- **Purpose**: Deep cognitive analysis with expert personas
+- **Purpose**: Deep cognitive analysis with expert personas and AI-powered answer verification
+
+**Key Features**:
+- **AI-Powered Grading**: Use separate models for answer verification instead of regex matching
+- **Expert Persona Modeling**: Detailed reasoning from domain specialists
+- **Semantic Answer Matching**: Understands answer equivalence ("third option" = "option 3")
+- **Dual Prediction Analysis**: Compare detailed vs. quick reasoning approaches
+- **Flexible Verification**: Falls back to regex if grading model not available
 
 **Expert Specialties**:
 - Microbiologist
@@ -180,57 +190,111 @@ python argonium_score_parallel_v9.py questions.json \
 - Historian
 - Generic Expert
 
-**Example**:
+**Examples**:
 ```bash
+# Basic reasoning analysis
 python reasoning_traces_v6.py questions.json \
     --model gpt41 \
     --specialty microbiologist \
     --whole-trace-analysis
+
+# With AI grading model for answer verification
+python reasoning_traces_v6.py questions.json \
+    --model gpt41 \
+    --grading-model scout \
+    --specialty physicist \
+    --dual-prediction
+
+# Multiple models for different tasks
+python reasoning_traces_v6.py questions.json \
+    --model claude3 \
+    --grading-model gpt41 \
+    --whole-trace-model scout \
+    --specialty microbiologist
 ```
 
 ### 6. Data Processing & Analysis
-Tools for JSON manipulation, sampling, and report generation:
-- `merge_json.py` - Combine multiple JSON files
-- `merge_incorrect_answers.py` - Analyze model errors
-- `sample_json.py` - Random sampling
-- `render_json.py` - Generate formatted reports
+**JSON Manipulation & Reporting:**
+- `merge_json.py` - Combine multiple JSON files with advanced options
+- `merge_incorrect_answers.py` - Analyze model errors and find intersections
+- `sample_json.py` - Random sampling from JSON datasets
+- `render_json.py` - Generate formatted markdown reports
+- `randomize_json.py` - Randomize JSON data for testing
+- `reprocess_results.py` - Post-process evaluation results
+
+**Document & PDF Processing:**
+- `split_pdf.py` - Split large PDF files into smaller chunks
+- `validate_pdf_quick.py` - Fast PDF validation and integrity checks
+- `paper_syn_org.py` - Organize paper synopses and metadata
+- `select_interesting_papers.py` - Filter and select relevant papers
+
+**Data Cleaning & Utilities:**
+- `cleanup_mc.py` - Clean and standardize multiple choice questions
+- `merge.py` - Basic file merging operations
 
 ## 🛠️ Core Tools Reference
 
+### Primary Pipeline Tools
 | Tool | Purpose | Key Features |
 |------|---------|-------------|
-| `download_papers_v8.py` | Paper discovery | AI keyword generation, relevance filtering |
-| `classify_papers.py` | Content classification | 25+ scientific categories, AI-powered |
+| `download_papers_v8.py` | Paper discovery | AI keyword generation, relevance filtering, PDF validation |
+| `classify_papers.py` | Content classification | 25+ scientific categories, AI-powered organization |
 | `analyze_resources.py` | Content analysis | TF-IDF, TextRank, comprehensive summaries |
 | `make_v21.py` | Question generation | Extract questions from papers, chunk processing |
-| `run_all_models.py` | Model benchmarking | Multi-model, parallel evaluation |
+| `run_all_models.py` | Model benchmarking | Multi-model, parallel evaluation, availability checks |
 | `argonium_score_parallel_v9.py` | Advanced scoring | Parallel processing, AI grading, error analysis |
-| `reasoning_traces_v6.py` | Reasoning analysis | Expert personas, detailed traces |
+| `reasoning_traces_v6.py` | Reasoning analysis | Expert personas, AI grading, dual prediction, meta-analysis |
+
+### Data Processing & Utilities
+| Tool | Purpose | Key Features |
+|------|---------|-------------|
 | `merge_incorrect_answers.py` | Error analysis | Intersection analysis, difficulty assessment |
+| `merge_json.py` | JSON manipulation | Combine datasets, filtering options |
+| `sample_json.py` | Data sampling | Random sampling with seed support |
+| `render_json.py` | Report generation | Markdown formatting, structured output |
+| `reprocess_results.py` | Results processing | Post-evaluation analysis and cleanup |
+| `split_pdf.py` | PDF processing | Split large documents, batch processing |
+| `validate_pdf_quick.py` | PDF validation | Fast integrity checks, corruption detection |
+| `cleanup_mc.py` | Data cleaning | Multiple choice standardization |
 
 ## 📁 Project Structure
 
 ```
 argonium/
-├── scripts/                      # Workflow automation scripts
+├── scripts/                        # Workflow automation scripts
 │   ├── complete_research_pipeline.sh
 │   ├── literature_discovery.sh
 │   ├── model_benchmark.sh
 │   ├── reasoning_analysis.sh
-│   └── papers_to_reasoning_simple.sh  # Simple papers → reasoning traces
-├── analyze_resources.py          # Literature analysis
-├── classify_papers.py           # AI-powered classification
-├── download_papers_v8.py        # Paper discovery and download
-├── make_v21.py                   # Question generation from papers
-├── argonium_score_parallel_v9.py # Advanced parallel scoring engine
-├── reasoning_traces_v6.py       # Detailed reasoning analysis
-├── run_all_models.py            # Multi-model benchmarking
-├── merge_incorrect_answers.py   # Error analysis
-├── [other processing tools]     # Data manipulation utilities
-├── model_servers.yaml.example   # Model configuration template
-├── requirements.txt             # Python dependencies
-├── install.sh                   # Installation script
-└── workflow.md                  # Detailed workflow documentation
+│   └── papers_to_reasoning_simple.sh
+├── # Core Pipeline Tools
+├── download_papers_v8.py          # Paper discovery and download with PDF validation
+├── classify_papers.py             # AI-powered classification and organization
+├── analyze_resources.py           # Literature analysis and summarization
+├── make_v21.py                     # Question generation from papers
+├── run_all_models.py              # Multi-model benchmarking with availability checks
+├── argonium_score_parallel_v9.py  # Advanced parallel scoring engine
+├── reasoning_traces_v6.py         # Detailed reasoning analysis with expert personas
+├── # Data Processing & Analysis Tools
+├── merge_json.py                   # Advanced JSON file combination
+├── merge_incorrect_answers.py     # Model error analysis and intersections
+├── sample_json.py                  # Random sampling with reproducible seeds
+├── render_json.py                  # Formatted report generation
+├── randomize_json.py              # JSON data randomization
+├── reprocess_results.py           # Post-evaluation result processing
+├── # Document & PDF Processing
+├── split_pdf.py                    # PDF splitting and batch processing
+├── validate_pdf_quick.py          # Fast PDF validation and integrity checks
+├── paper_syn_org.py               # Paper synopsis organization
+├── select_interesting_papers.py   # Paper filtering and selection
+├── # Utilities & Cleanup
+├── cleanup_mc.py                   # Multiple choice question standardization
+├── merge.py                        # Basic file merging operations
+├── # Configuration & Setup
+├── model_servers.yaml.example     # Model configuration template
+├── requirements.txt               # Python dependencies
+├── install.sh                     # Installation script
+└── workflow.md                    # Detailed workflow documentation
 ```
 
 ## ⚙️ Configuration
@@ -314,18 +378,28 @@ python argonium_score_parallel_v9.py questions.json \
 
 ### Model Reasoning Assessment
 ```bash
-# 1. Analyze reasoning with domain expertise
-./scripts/reasoning_analysis.sh \
-    --questions questions.json \
+# 1. Analyze reasoning with domain expertise and AI grading
+python reasoning_traces_v6.py questions.json \
+    --model gpt41 \
+    --grading-model scout \
     --specialty microbiologist \
     --max-questions 100 \
-    --whole-trace
+    --whole-trace-analysis
 
-# 2. Compare different expert perspectives
-./scripts/reasoning_analysis.sh \
-    --questions questions.json \
+# 2. Compare detailed vs. quick reasoning approaches
+python reasoning_traces_v6.py questions.json \
+    --model claude3 \
+    --grading-model gpt41 \
     --specialty physicist \
+    --dual-prediction \
     --max-questions 100
+
+# 3. Multi-model reasoning analysis
+python reasoning_traces_v6.py questions.json \
+    --model llama2 \
+    --grading-model gpt41 \
+    --whole-trace-model scout \
+    --specialty microbiologist
 ```
 
 ### Complete Research Pipeline
@@ -336,6 +410,27 @@ python argonium_score_parallel_v9.py questions.json \
     --specialty "quantum physicist" \
     --max-papers 50 \
     --sample-questions 75
+```
+
+### Data Processing & Utilities
+```bash
+# Combine multiple JSON datasets
+python merge_json.py dataset1.json dataset2.json --output combined.json
+
+# Random sampling for testing
+python sample_json.py large_dataset.json 100 --seed 42 > sample.json
+
+# Generate formatted reports
+python render_json.py results.json --output report.md
+
+# Validate PDF integrity
+python validate_pdf_quick.py papers/*.pdf
+
+# Split large PDFs for processing
+python split_pdf.py large_paper.pdf --max-pages 20
+
+# Clean multiple choice questions
+python cleanup_mc.py messy_questions.json --output clean_questions.json
 ```
 
 ## 📊 Output Formats

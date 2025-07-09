@@ -8,12 +8,253 @@ import argparse
 import yaml
 import subprocess
 import tempfile
+from pathlib import Path
+from typing import Optional
+from dataclasses import dataclass
 from openai import OpenAI, OpenAIError
 
 # Base URL for Semantic Scholar API
 BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = 'title,authors,year,externalIds,url,venue,openAccessPdf,abstract,paperId'
-MODEL_CONFIG_FILE = 'model_servers.yaml'
+
+# Optional imports for PDF validation
+try:
+    import PyPDF2
+    HAS_PYPDF2 = True
+except ImportError:
+    HAS_PYPDF2 = False
+
+try:
+    import fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+
+@dataclass
+class ValidationResult:
+    """Result of PDF validation"""
+    file_path: str
+    file_size: int
+    is_valid: bool
+    is_parsable: bool
+    validation_method: str
+    error_message: Optional[str] = None
+    validation_time: float = 0.0
+    page_count: Optional[int] = None
+    is_encrypted: bool = False
+    is_scanned: Optional[bool] = None
+
+class PDFValidator:
+    """Comprehensive PDF validation using multiple methods with qpdf as last resort"""
+    
+    def __init__(self, use_qpdf_as_fallback: bool = True):
+        self.use_qpdf_as_fallback = use_qpdf_as_fallback
+        self.qpdf_available = self._check_qpdf_available()
+        
+        if not any([self.qpdf_available, HAS_PYPDF2, HAS_PYMUPDF]):
+            print("Warning: No PDF validation tools available. Install qpdf, PyPDF2, or PyMuPDF for validation.")
+    
+    def _check_qpdf_available(self) -> bool:
+        """Check if qpdf is available"""
+        try:
+            subprocess.run(['qpdf', '--version'], capture_output=True, timeout=5)
+            return True
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+    
+    def _basic_file_checks(self, pdf_path: str) -> Optional[ValidationResult]:
+        """Perform basic file checks before PDF validation"""
+        try:
+            if not os.path.exists(pdf_path):
+                return ValidationResult(
+                    file_path=pdf_path, file_size=0, is_valid=False, is_parsable=False,
+                    validation_method="file_check", error_message="File not found"
+                )
+            
+            file_size = os.path.getsize(pdf_path)
+            if file_size == 0:
+                return ValidationResult(
+                    file_path=pdf_path, file_size=0, is_valid=False, is_parsable=False,
+                    validation_method="file_check", error_message="Empty file"
+                )
+            
+            if file_size < 100:  # PDFs have minimum size
+                return ValidationResult(
+                    file_path=pdf_path, file_size=file_size, is_valid=False, is_parsable=False,
+                    validation_method="file_check", error_message="File too small to be valid PDF"
+                )
+            
+            # Check PDF header
+            with open(pdf_path, 'rb') as f:
+                header = f.read(8)
+                if not header.startswith(b'%PDF-'):
+                    return ValidationResult(
+                        file_path=pdf_path, file_size=file_size, is_valid=False, is_parsable=False,
+                        validation_method="file_check", error_message="Invalid PDF header"
+                    )
+            
+            return None  # Passed basic checks
+            
+        except Exception as e:
+            return ValidationResult(
+                file_path=pdf_path, file_size=0, is_valid=False, is_parsable=False,
+                validation_method="file_check", error_message=str(e)
+            )
+    
+    def _validate_with_pymupdf(self, pdf_path: str) -> ValidationResult:
+        """Validate PDF using PyMuPDF (most practical method)"""
+        start_time = time.time()
+        
+        try:
+            doc = fitz.open(pdf_path)
+            is_encrypted = doc.needs_pass
+            page_count = len(doc)
+            
+            # Quick heuristic to check if it's a scanned PDF
+            is_scanned = None
+            if page_count > 0 and not is_encrypted:
+                first_page = doc[0]
+                text = first_page.get_text()
+                is_scanned = len(text.strip()) < 10  # Very little text suggests scanned
+            
+            doc.close()
+            validation_time = time.time() - start_time
+            
+            return ValidationResult(
+                file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                is_valid=True, is_parsable=not is_encrypted and not is_scanned,
+                validation_method="PyMuPDF", validation_time=validation_time,
+                page_count=page_count, is_encrypted=is_encrypted, is_scanned=is_scanned
+            )
+            
+        except Exception as e:
+            return ValidationResult(
+                file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                is_valid=False, is_parsable=False, validation_method="PyMuPDF",
+                error_message=str(e), validation_time=time.time() - start_time
+            )
+    
+    def _validate_with_pypdf2(self, pdf_path: str) -> ValidationResult:
+        """Validate PDF using PyPDF2"""
+        start_time = time.time()
+        
+        try:
+            with open(pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                is_encrypted = reader.is_encrypted
+                page_count = len(reader.pages)
+                
+                # Quick validation by accessing first page
+                if page_count > 0:
+                    first_page = reader.pages[0]
+                    _ = first_page.mediabox  # This validates basic structure
+                
+                validation_time = time.time() - start_time
+                
+                return ValidationResult(
+                    file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                    is_valid=True, is_parsable=not is_encrypted,
+                    validation_method="PyPDF2", validation_time=validation_time,
+                    page_count=page_count, is_encrypted=is_encrypted
+                )
+                
+        except Exception as e:
+            return ValidationResult(
+                file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                is_valid=False, is_parsable=False, validation_method="PyPDF2",
+                error_message=str(e), validation_time=time.time() - start_time
+            )
+    
+    def _validate_with_qpdf(self, pdf_path: str) -> ValidationResult:
+        """Validate PDF using qpdf (fallback method - strict but reliable)"""
+        start_time = time.time()
+        
+        try:
+            result = subprocess.run(['qpdf', '--check', pdf_path], 
+                                  capture_output=True, text=True, timeout=30)
+            validation_time = time.time() - start_time
+            
+            if result.returncode == 0:
+                # Get page count
+                page_count = self._get_page_count_qpdf(pdf_path)
+                
+                return ValidationResult(
+                    file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                    is_valid=True, is_parsable=True,  # qpdf validation implies parsability
+                    validation_method="qpdf", validation_time=validation_time,
+                    page_count=page_count
+                )
+            else:
+                return ValidationResult(
+                    file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                    is_valid=False, is_parsable=False, validation_method="qpdf",
+                    error_message=f"qpdf strict validation failed. Note: file may still work in viewers. Error: {result.stderr.strip()}",
+                    validation_time=validation_time
+                )
+                
+        except subprocess.TimeoutExpired:
+            return ValidationResult(
+                file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                is_valid=False, is_parsable=False, validation_method="qpdf",
+                error_message="Validation timeout", validation_time=time.time() - start_time
+            )
+        except Exception as e:
+            return ValidationResult(
+                file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+                is_valid=False, is_parsable=False, validation_method="qpdf",
+                error_message=str(e), validation_time=time.time() - start_time
+            )
+    
+    def _get_page_count_qpdf(self, pdf_path: str) -> Optional[int]:
+        """Get page count using qpdf"""
+        try:
+            result = subprocess.run(['qpdf', '--show-npages', pdf_path], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return int(result.stdout.strip())
+        except:
+            pass
+        return None
+    
+    def validate(self, pdf_path: str) -> ValidationResult:
+        """
+        Validate a PDF file using the best available method.
+        Priority order: PyMuPDF > PyPDF2 > qpdf (as last resort)
+        """
+        # Basic file checks first
+        basic_result = self._basic_file_checks(pdf_path)
+        if basic_result:
+            return basic_result
+        
+        # Try PyMuPDF first (most practical - matches PDF viewer behavior)
+        if HAS_PYMUPDF:
+            result = self._validate_with_pymupdf(pdf_path)
+            if result.is_valid:
+                return result
+            print(f"PyMuPDF validation failed for {pdf_path}: {result.error_message}")
+        
+        # Try PyPDF2 as backup
+        if HAS_PYPDF2:
+            result = self._validate_with_pypdf2(pdf_path)
+            if result.is_valid:
+                return result
+            print(f"PyPDF2 validation failed for {pdf_path}: {result.error_message}")
+        
+        # Use qpdf as last resort if enabled and available
+        if self.use_qpdf_as_fallback and self.qpdf_available:
+            print(f"Using qpdf as last resort for {pdf_path}")
+            result = self._validate_with_qpdf(pdf_path)
+            if not result.is_valid:
+                # Add context that qpdf is strict
+                result.error_message = f"qpdf validation failed: {result.error_message}. Note: qpdf is strict - file may still work in viewers."
+            return result
+        
+        # No validation method succeeded or available
+        return ValidationResult(
+            file_path=pdf_path, file_size=os.path.getsize(pdf_path),
+            is_valid=False, is_parsable=False, validation_method="none",
+            error_message="No validation method available or all methods failed"
+        )
 
 def sanitize_filename(name):
     """Create a file-system friendly name."""
@@ -97,35 +338,29 @@ def search_papers(keyword, api_key, limit=100, offset=0):
     print(f"Failed to fetch papers for keyword '{keyword}' after {max_retries} retries.")
     return None
 
-def validate_pdf_with_qpdf(pdf_path):
+def validate_pdf_comprehensive(pdf_path):
     """
-    Validate a PDF file using qpdf.
-    Returns True if valid, False otherwise.
+    Validate a PDF file using comprehensive validation methods.
+    Uses the comprehensive PDFValidator class with qpdf as last resort.
+    Returns True if valid and parsable, False otherwise.
     """
-    try:
-        # Use qpdf to check if the PDF is valid
-        # qpdf --check returns 0 for valid PDFs, non-zero for invalid
-        result = subprocess.run(['qpdf', '--check', pdf_path], 
-                              capture_output=True, text=True, timeout=30)
-        
-        if result.returncode == 0:
-            print(f"PDF validation successful: {pdf_path}")
-            return True
-        else:
-            print(f"PDF validation failed: {pdf_path}")
-            print(f"qpdf error: {result.stderr}")
-            return False
-            
-    except subprocess.TimeoutExpired:
-        print(f"PDF validation timed out: {pdf_path}")
-        return False
-    except FileNotFoundError:
-        print("Warning: qpdf not found. Install qpdf for PDF validation.")
-        print("On macOS: brew install qpdf")
-        print("On Ubuntu/Debian: sudo apt-get install qpdf")
-        return True  # Allow download to proceed if qpdf is not available
-    except Exception as e:
-        print(f"Error validating PDF {pdf_path}: {e}")
+    validator = PDFValidator(use_qpdf_as_fallback=True)
+    result = validator.validate(pdf_path)
+    
+    if result.is_valid and result.is_parsable:
+        print(f"PDF validation successful ({result.validation_method}): {pdf_path}")
+        if result.page_count:
+            print(f"  Pages: {result.page_count}")
+        if result.is_encrypted:
+            print(f"  Warning: PDF is encrypted")
+        if result.is_scanned:
+            print(f"  Warning: PDF appears to be scanned (OCR may be needed)")
+        print(f"  Validation time: {result.validation_time:.3f}s")
+        return True
+    else:
+        print(f"PDF validation failed ({result.validation_method}): {pdf_path}")
+        if result.error_message:
+            print(f"  Error: {result.error_message}")
         return False
 
 def download_pdf(pdf_url, save_path):
@@ -147,8 +382,8 @@ def download_pdf(pdf_url, save_path):
             
             print(f"Downloaded PDF to temporary file: {temp_path}")
             
-            # Validate the PDF using qpdf
-            if validate_pdf_with_qpdf(temp_path):
+            # Validate the PDF using comprehensive methods
+            if validate_pdf_comprehensive(temp_path):
                 # If valid, move to final location
                 import shutil
                 shutil.move(temp_path, save_path)
@@ -173,13 +408,14 @@ def download_pdf(pdf_url, save_path):
     
     return True
 
-def generate_keywords_with_openai(base_keyword, model_shortname):
+def generate_keywords_with_openai(base_keyword, model_shortname, config_file):
     """
     Generates related research keywords using an OpenAI-compatible model.
 
     Args:
         base_keyword (str): The keyword to generate related terms from.
         model_shortname (str): The shortname of the model config in model_servers.yaml.
+        config_file (str): Path to the model configuration file.
 
     Returns:
         list[str]: A list of generated keywords.
@@ -193,12 +429,12 @@ def generate_keywords_with_openai(base_keyword, model_shortname):
 
     # --- 1. Load Model Configuration ---
     try:
-        with open(MODEL_CONFIG_FILE, 'r') as f:
+        with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
-        raise FileNotFoundError(f"Error: Model configuration file '{MODEL_CONFIG_FILE}' not found.")
+        raise FileNotFoundError(f"Error: Model configuration file '{config_file}' not found.")
     except yaml.YAMLError as e:
-        raise ValueError(f"Error parsing YAML file '{MODEL_CONFIG_FILE}': {e}")
+        raise ValueError(f"Error parsing YAML file '{config_file}': {e}")
 
     model_config = None
     for server in config.get('servers', []):
@@ -207,7 +443,7 @@ def generate_keywords_with_openai(base_keyword, model_shortname):
             break
 
     if not model_config:
-        raise ValueError(f"Error: Model shortname '{model_shortname}' not found in '{MODEL_CONFIG_FILE}'.")
+        raise ValueError(f"Error: Model shortname '{model_shortname}' not found in '{config_file}'.")
 
     # --- 2. Determine OpenAI API Key ---
     openai_api_key_config = model_config.get('openai_api_key')
@@ -227,7 +463,7 @@ def generate_keywords_with_openai(base_keyword, model_shortname):
         print(f"Using OpenAI API key configured for model '{model_shortname}'.")
     else:
         raise ValueError(f"Error: 'openai_api_key' not specified for model '{model_shortname}' "
-                         f"in '{MODEL_CONFIG_FILE}'.")
+                         f"in '{config_file}'.")
 
     # --- 3. Instantiate OpenAI Client ---
     openai_api_base = model_config.get('openai_api_base')
@@ -235,7 +471,7 @@ def generate_keywords_with_openai(base_keyword, model_shortname):
 
     if not openai_api_base or not openai_model:
         raise ValueError(f"Error: 'openai_api_base' or 'openai_model' missing for model "
-                         f"'{model_shortname}' in '{MODEL_CONFIG_FILE}'.")
+                         f"'{model_shortname}' in '{config_file}'.")
 
     try:
         client = OpenAI(
@@ -282,7 +518,7 @@ def generate_keywords_with_openai(base_keyword, model_shortname):
         print(f"An unexpected error occurred during keyword generation: {e}")
         raise # Re-raise for handling in main
 
-def check_relevance_with_openai(abstract: str, keyword: str, model_shortname: str) -> bool:
+def check_relevance_with_openai(abstract: str, keyword: str, model_shortname: str, config_file: str) -> bool:
     """
     Checks if a paper abstract is relevant to a given keyword using an OpenAI-compatible model.
 
@@ -290,6 +526,7 @@ def check_relevance_with_openai(abstract: str, keyword: str, model_shortname: st
         abstract (str): The paper's abstract text.
         keyword (str): The search keyword the abstract should be relevant to.
         model_shortname (str): The shortname of the model config in model_servers.yaml.
+        config_file (str): Path to the model configuration file.
 
     Returns:
         bool: True if the abstract is deemed relevant, False otherwise (including errors).
@@ -302,13 +539,13 @@ def check_relevance_with_openai(abstract: str, keyword: str, model_shortname: st
 
     # --- 1. Load Model Configuration ---
     try:
-        with open(MODEL_CONFIG_FILE, 'r') as f:
+        with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"Error: Model configuration file '{MODEL_CONFIG_FILE}' not found during relevance check.")
+        print(f"Error: Model configuration file '{config_file}' not found during relevance check.")
         return False
     except yaml.YAMLError as e:
-        print(f"Error parsing YAML file '{MODEL_CONFIG_FILE}' during relevance check: {e}")
+        print(f"Error parsing YAML file '{config_file}' during relevance check: {e}")
         return False
 
     model_config = None
@@ -318,7 +555,7 @@ def check_relevance_with_openai(abstract: str, keyword: str, model_shortname: st
             break
 
     if not model_config:
-        print(f"Error: Model shortname '{model_shortname}' not found in '{MODEL_CONFIG_FILE}' for relevance check.")
+        print(f"Error: Model shortname '{model_shortname}' not found in '{config_file}' for relevance check.")
         return False
 
     # --- 2. Determine OpenAI API Key ---
@@ -405,6 +642,7 @@ def main():
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(description="Download academic papers from Semantic Scholar.")
     parser.add_argument('--ss-api-key', type=str, help='Semantic Scholar API key.')
+    parser.add_argument('--config', type=str, default='model_servers.yaml', help='Path to the model servers configuration file (default: model_servers.yaml).')
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--keywords-file', type=str, help='Path to a file containing keywords (one per line).')
@@ -456,7 +694,7 @@ def main():
         print(f"Using {len(keywords)} keywords from command line argument.")
     elif args.generate_keywords:
         try:
-            keywords = generate_keywords_with_openai(args.generate_keywords, args.model)
+            keywords = generate_keywords_with_openai(args.generate_keywords, args.model, args.config)
             if not keywords:
                 print("No keywords were generated. Exiting.")
                 sys.exit(0)
@@ -569,7 +807,7 @@ def main():
             is_relevant = True # Assume relevant by default or if check is skipped
             if not args.skip_relevance_check and args.relevance_model and abstract:
                 try:
-                    is_relevant = check_relevance_with_openai(abstract, keyword, args.relevance_model)
+                    is_relevant = check_relevance_with_openai(abstract, keyword, args.relevance_model, args.config)
                     # Add a small delay after relevance check API call
                     time.sleep(2)
                 except Exception as e:

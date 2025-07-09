@@ -4,12 +4,13 @@
 Argonium Advanced Question Grader v9.0 (Parallel)
 
 Usage:
-    python argonium_score_parallel_v9.py <questions_file.json> --model <model_shortname> --grader <grader_shortname> [--parallel <num_workers>] [--format auto|mc|qa] [--random <num_questions>] [--seed <random_seed>] [--save-incorrect]
+    python argonium_score_parallel_v9.py <questions_file.json> --model <model_shortname> --grader <grader_shortname> [--config <config_file>] [--parallel <num_workers>] [--format auto|mc|qa] [--random <num_questions>] [--seed <random_seed>] [--save-incorrect]
 
 Where:
     - questions_file.json: A JSON file with an array of objects, each having "question" and "answer" fields
     - model_shortname: The shortname of the model to test from model_servers.yaml
     - grader_shortname: The shortname of the model to use for grading from model_servers.yaml
+    - config_file: Configuration file to use for model settings (default: model_servers.yaml)
     - parallel: Number of concurrent workers for parallel processing (default: 1)
     - format: Format of questions (auto, mc, qa) (default: auto)
     - random: Randomly select N questions from the dataset (optional)
@@ -18,6 +19,7 @@ Where:
 
 Examples:
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --parallel 4
+    python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --config custom_models.yaml
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --random 20
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --random 20 --seed 42
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --save-incorrect
@@ -79,12 +81,15 @@ def get_openai_client(api_key, api_base, timeout=120.0):
             )
         return _client_cache[cache_key]
 
-def load_model_config(model_shortname):
+def load_model_config(model_shortname, config_file="model_servers.yaml"):
     """
-    Load model configuration from the model_servers.yaml file.
+    Load model configuration from the specified configuration file.
     Returns a dictionary with api_key, api_base, and model_name.
     """
-    yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_servers.yaml")
+    if os.path.isabs(config_file):
+        yaml_path = config_file
+    else:
+        yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_file)
     
     try:
         with open(yaml_path, 'r') as yaml_file:
@@ -926,6 +931,7 @@ def parse_arguments():
     parser.add_argument('questions_file', help='JSON file with questions and answers')
     parser.add_argument('--model', required=True, help='Model shortname from model_servers.yaml to test')
     parser.add_argument('--grader', required=True, help='Model shortname from model_servers.yaml to use for grading')
+    parser.add_argument('--config', default='model_servers.yaml', help='Configuration file to use for model settings (default: model_servers.yaml)')
     parser.add_argument('--parallel', type=int, default=1, help='Number of concurrent workers (default: 1)')
     parser.add_argument('--format', choices=['auto', 'mc', 'qa'], default='auto', 
                         help='Format of questions: auto=auto-detect, mc=multiple-choice, qa=free-form QA (default: auto)')
@@ -944,8 +950,8 @@ def main():
     args = parse_arguments()
     
     # Load model configs
-    model_config = load_model_config(args.model)
-    grader_config = load_model_config(args.grader)
+    model_config = load_model_config(args.model, args.config)
+    grader_config = load_model_config(args.grader, args.config)
     
     print(f"Testing model: {args.model} ({model_config['model_name']})")
     print(f"Grading with: {args.grader} ({grader_config['model_name']})")
