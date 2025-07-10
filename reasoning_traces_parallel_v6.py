@@ -9,6 +9,7 @@ import re
 import sys
 import textwrap
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -121,6 +122,12 @@ def parse_arguments():
     advanced_group.add_argument(
         "--capture-incorrect",
         help="Output file to capture incorrect answers with both predicted and correct answers",
+    )
+    advanced_group.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for processing questions (default: 1)",
     )
 
     return parser.parse_args()
@@ -2208,6 +2215,176 @@ Format your response as a detailed professional analysis with clear sections and
         }
 
 
+def process_question_wrapper(args_tuple):
+    """
+    Wrapper function for parallel processing of questions.
+
+    Args:
+        args_tuple: Tuple containing (question, client, model_name, specialty,
+                   enable_dual_prediction, grading_client, grading_model_name, verbose_grading)
+
+    Returns:
+        Dictionary containing the processed trace and metadata
+    """
+    try:
+        (
+            question,
+            client,
+            model_name,
+            specialty,
+            enable_dual_prediction,
+            grading_client,
+            grading_model_name,
+            verbose_grading,
+        ) = args_tuple
+
+        # Generate the reasoning trace
+        trace = generate_reasoning_trace(
+            question,
+            client,
+            model_name,
+            specialty,
+            enable_dual_prediction=enable_dual_prediction,
+            grading_client=grading_client,
+            grading_model_name=grading_model_name,
+            verbose_grading=verbose_grading,
+        )
+
+        return {
+            "success": True,
+            "trace": trace,
+            "error": None,
+        }
+
+    except Exception as e:
+        log_message(f"Error processing question: {e}", log_level="ERROR")
+        return {
+            "success": False,
+            "trace": None,
+            "error": str(e),
+        }
+
+
+def process_questions_parallel(
+    mc_questions: List[Dict[str, Any]],
+    client: OpenAI,
+    model_name: str,
+    specialty: str,
+    enable_dual_prediction: bool,
+    grading_client: OpenAI,
+    grading_model_name: str,
+    verbose_grading: bool,
+    num_workers: int = 1,
+) -> List[Dict[str, Any]]:
+    """
+    Process questions in parallel using ThreadPoolExecutor.
+
+    Args:
+        mc_questions: List of question dictionaries
+        client: OpenAI client for main processing
+        model_name: Model name for main processing
+        specialty: Specialty persona
+        enable_dual_prediction: Whether to enable dual prediction
+        grading_client: OpenAI client for grading
+        grading_model_name: Model name for grading
+        verbose_grading: Whether to show verbose grading output
+        num_workers: Number of parallel workers
+
+    Returns:
+        List of processed traces
+    """
+    if num_workers == 1:
+        # Sequential processing (original behavior)
+        results = []
+        for question in tqdm(
+            mc_questions, desc=f"Generating {specialty}'s reasoning traces"
+        ):
+            trace = generate_reasoning_trace(
+                question,
+                client,
+                model_name,
+                specialty,
+                enable_dual_prediction=enable_dual_prediction,
+                grading_client=grading_client,
+                grading_model_name=grading_model_name,
+                verbose_grading=verbose_grading,
+            )
+            results.append(trace)
+        return results
+
+    # Parallel processing
+    log_message(f"Using {num_workers} parallel workers for question processing")
+
+    # Prepare arguments for parallel processing
+    args_list = [
+        (
+            question,
+            client,
+            model_name,
+            specialty,
+            enable_dual_prediction,
+            grading_client,
+            grading_model_name,
+            verbose_grading,
+        )
+        for question in mc_questions
+    ]
+
+    results = []
+    failed_count = 0
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        future_to_index = {
+            executor.submit(process_question_wrapper, args): i
+            for i, args in enumerate(args_list)
+        }
+
+        # Collect results with progress tracking
+        with tqdm(
+            total=len(mc_questions),
+            desc=f"Generating {specialty}'s reasoning traces (parallel)",
+        ) as pbar:
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    result = future.result()
+                    if result["success"]:
+                        results.append((index, result["trace"]))
+                    else:
+                        failed_count += 1
+                        log_message(
+                            f"Failed to process question {index}: {result['error']}",
+                            log_level="ERROR",
+                        )
+                        # Add empty result to maintain order
+                        results.append((index, None))
+                except Exception as e:
+                    failed_count += 1
+                    log_message(
+                        f"Exception processing question {index}: {e}", log_level="ERROR"
+                    )
+                    results.append((index, None))
+
+                pbar.update(1)
+                pbar.set_postfix({"Failed": failed_count})
+
+    # Sort results by original order and filter out None values
+    results.sort(key=lambda x: x[0])
+    final_results = [trace for _, trace in results if trace is not None]
+
+    if failed_count > 0:
+        log_message(
+            f"Failed to process {failed_count} out of {len(mc_questions)} questions",
+            log_level="WARNING",
+        )
+
+    log_message(
+        f"Successfully processed {len(final_results)} out of {len(mc_questions)} questions using {num_workers} workers"
+    )
+    return final_results
+
+
 def print_whole_trace_analysis(analysis: Dict[str, Any]):
     """
     Print a human-readable version of the whole trace analysis.
@@ -2366,24 +2543,21 @@ def main():
     )
     log_message(f"Using {args.specialty} persona for scientific reasoning")
 
-    # Generate reasoning traces for each question
-    for i, question in enumerate(
-        tqdm(mc_questions, desc=f"Generating {args.specialty}'s reasoning traces")
-    ):
-        # Generate the basic reasoning trace (with dual prediction if enabled)
-        trace = generate_reasoning_trace(
-            question,
-            client,
-            model_name,
-            args.specialty,
-            enable_dual_prediction=args.dual_prediction,
-            grading_client=grading_client,
-            grading_model_name=grading_model_name,
-            verbose_grading=args.verbose_grading,
-        )
-        results.append(trace)
+    # Generate reasoning traces for each question (parallel or sequential)
+    results = process_questions_parallel(
+        mc_questions,
+        client,
+        model_name,
+        args.specialty,
+        args.dual_prediction,
+        grading_client,
+        grading_model_name,
+        args.verbose_grading,
+        args.workers,
+    )
 
-        # Print readable output to console (with stream analysis if whole-trace-analysis is enabled)
+    # Print readable output to console for each result
+    for i, (question, trace) in enumerate(zip(mc_questions, results)):
         print_readable_output(
             question,
             trace,
@@ -2394,7 +2568,7 @@ def main():
 
         # Save intermediate results at specified intervals
         current_index = starting_index + i + 1
-        if (current_index % args.save_interval == 0) or (i == len(mc_questions) - 1):
+        if (current_index % args.save_interval == 0) or (i == len(results) - 1):
             try:
                 with open(args.output, "w", encoding="utf-8") as f:
                     json.dump(results, f, indent=2)
