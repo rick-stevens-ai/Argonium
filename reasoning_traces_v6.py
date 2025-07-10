@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+
 # OpenAI imports
 from openai import OpenAI
 from tqdm import tqdm
@@ -105,7 +106,7 @@ def parse_arguments():
         help="Add Argonium-style prediction after detailed reasoning and compare the two approaches",
     )
     advanced_group.add_argument(
-        "--grading-model",
+        "--grading",
         help="Model to use for grading/verifying answers (defaults to same as --model if not specified)",
     )
     advanced_group.add_argument(
@@ -1799,7 +1800,7 @@ def print_readable_output(
                 print(
                     f"   ⚠️  Warning: No grading model was available to verify this answer"
                 )
-                print(f"   To enable answer verification, use --grading-model argument")
+                print(f"   To enable answer verification, use --grading argument")
 
                 # Mark as unknown since we cannot verify without grading model
                 reasoning_trace["prediction_correct"] = None
@@ -2260,34 +2261,32 @@ def main():
     # Configure the grading model (if different)
     grading_client = client
     grading_model_name = model_name
-    if args.grading_model:
-        grading_client, grading_model_name = configure_apis(
-            args.grading_model, args.config
-        )
-        log_message(f"Using different model for grading: {args.grading_model}")
+    if args.grading:
+        grading_client, grading_model_name = configure_apis(args.grading, args.config)
+        log_message(f"Using different model for grading: {args.grading}")
 
     # Check grading model requirements
-    if args.require_grading_model and not args.grading_model:
+    if args.require_grading_model and not args.grading:
         log_message(
-            "Error: --require-grading-model specified but no --grading-model provided",
+            "Error: --require-grading-model specified but no --grading provided",
             log_level="ERROR",
         )
         log_message(
-            "Please specify a grading model with --grading-model when using --require-grading-model",
+            "Please specify a grading model with --grading when using --require-grading-model",
             log_level="ERROR",
         )
         sys.exit(1)
 
     # Inform user about scoring method
-    if args.grading_model:
+    if args.grading:
         log_message(
-            f"Answer verification will be performed using grading model: {args.grading_model}"
+            f"Answer verification will be performed using grading model: {args.grading}"
         )
     else:
         log_message(
             "Warning: No grading model specified. Answer correctness cannot be determined."
         )
-        log_message("Use --grading-model argument to enable answer verification.")
+        log_message("Use --grading argument to enable answer verification.")
         if args.require_grading_model:
             log_message(
                 "Error: Grading model is required but not specified", log_level="ERROR"
@@ -2482,7 +2481,7 @@ def main():
     else:
         print("Overall accuracy: No predictions could be graded (0 graded questions)")
         print("Verification method: None (no grading model available)")
-        print("⚠️  Use --grading-model argument to enable answer verification")
+        print("⚠️  Use --grading argument to enable answer verification")
 
     # Print confidence-based accuracy if there's enough data
     if high_confidence_total + medium_confidence_total + low_confidence_total > 0:
