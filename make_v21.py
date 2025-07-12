@@ -1594,6 +1594,80 @@ def extract_chunks_sequentially(file_map: Dict[str, Dict], chunks_dir: str,
     return file_to_chunks
     
 
+def check_content_relevance(chunk_text: str, model_name: str) -> Dict:
+    """
+    Check if the chunk content is relevant to the paper's core content.
+    Returns relevance score and reasoning.
+    """
+    system_message = (
+        "You are an expert content evaluator who determines if text content is relevant "
+        "to the core scientific/technical content of a paper versus non-relevant material "
+        "like copyright notices, licensing information, references, acknowledgments, or metadata."
+    )
+    
+    user_message = (
+        f"Evaluate the following text chunk and determine if it contains core scientific/technical content "
+        f"that would be appropriate for generating educational questions.\n\n"
+        f"TEXT CHUNK:\n{chunk_text}\n\n"
+        f"EVALUATION CRITERIA:\n"
+        f"- CORE CONTENT (High relevance): Scientific concepts, research findings, technical explanations, "
+        f"methodology, data analysis, theories, experimental results, clinical information, etc.\n"
+        f"- NON-CORE CONTENT (Low relevance): Copyright notices, licensing text, reference lists, "
+        f"acknowledgments, author information, publication metadata, figure/table captions only, "
+        f"page headers/footers, disclaimers, etc.\n\n"
+        f"SCORING:\n"
+        f"- Score 8-10: Rich core content ideal for question generation\n"
+        f"- Score 5-7: Some core content but mixed with non-relevant material\n"
+        f"- Score 1-4: Primarily non-relevant content (references, metadata, etc.)\n\n"
+        f"Provide your response in this format:\n"
+        f"RELEVANCE_SCORE: <numeric score between 1-10>\n"
+        f"REASONING: <brief explanation of why this content is or isn't relevant for question generation>\n"
+        f"CONTENT_TYPE: <primary type of content: 'core_scientific', 'mixed', 'references', 'metadata', 'copyright', etc.>\n"
+    )
+    
+    try:
+        response = batched_openai_completion(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.3,
+        )
+        
+        output = response['choices'][0]['message']['content'].strip()
+        
+        # Extract relevance score
+        score_match = re.search(r"RELEVANCE_SCORE:\s*(\d+(?:\.\d+)?)", output)
+        relevance_score = int(float(score_match.group(1))) if score_match else 5
+        
+        # Extract reasoning
+        reasoning_match = re.search(r"REASONING:\s*(.*?)(?:\n|$)", output, re.DOTALL)
+        reasoning = reasoning_match.group(1).strip() if reasoning_match else "No reasoning provided"
+        
+        # Extract content type
+        content_type_match = re.search(r"CONTENT_TYPE:\s*(.*?)(?:\n|$)", output)
+        content_type = content_type_match.group(1).strip() if content_type_match else "unknown"
+        
+        return {
+            'relevance_score': relevance_score,
+            'reasoning': reasoning,
+            'content_type': content_type,
+            'is_relevant': relevance_score >= 6,  # Threshold for relevance
+            'raw_output': output
+        }
+        
+    except Exception as e:
+        log_message(f"Error checking content relevance: {e}", log_level="ERROR", error_type="relevance_check")
+        return {
+            'relevance_score': 5,  # Default to medium relevance on error
+            'reasoning': f"Error during relevance check: {str(e)}",
+            'content_type': 'unknown',
+            'is_relevant': True,  # Default to relevant on error to avoid losing content
+            'raw_output': ""
+        }
+
+
 def process_chunk(chunk_id: str, chunks_dir: str, model_name: str, 
                  question_type: QuestionType, num_answers: int, min_score: int, 
                  checkpoint_manager):
@@ -1704,6 +1778,23 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
             'status': 'cancelled',
             'processing_time': 0,
             'message': 'Cancelled due to shutdown request'
+        }
+    
+    # --------------------------------------------------------------------
+    # Step 0: Check content relevance
+    # --------------------------------------------------------------------
+    relevance_check = check_content_relevance(chunk_text, model_name)
+    
+    # Skip non-relevant content
+    if not relevance_check['is_relevant']:
+        log_message(f"Chunk {chunk_id} skipped - not relevant to core content: {relevance_check['reasoning']}", 
+                   log_level="INFO", error_type="content_filter")
+        return {
+            'chunk_id': chunk_id,
+            'status': 'filtered_non_relevant',
+            'processing_time': time.time() - start_time,
+            'relevance_check': relevance_check,
+            'message': f"Skipped non-relevant content: {relevance_check['content_type']}"
         }
     
     # --------------------------------------------------------------------
@@ -1826,19 +1917,29 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
         f"where 10 is a perfect question.\n\n"
         f"CONTENT:\n{chunk_text}\n\n"
         f"QUESTION:\n{step2_output}\n\n"
+        f"CONTENT RELEVANCE INFO:\n"
+        f"- Relevance Score: {relevance_check['relevance_score']}/10\n"
+        f"- Content Type: {relevance_check['content_type']}\n"
+        f"- Relevance Reasoning: {relevance_check['reasoning']}\n\n"
         f"Rate the question based on these criteria:\n"
         f"- Clarity: Is the question clear and unambiguous?\n"
         f"- Accuracy: Is the content factually correct and aligned with the source material?\n"
         f"- Difficulty: Is the difficulty appropriate (challenging but fair)?\n"
         f"- Distractors: Are the incorrect options plausible but clearly wrong?\n"
         f"- Educational value: Does answering this question demonstrate understanding?\n"
-        f"- Self-contained: CRITICAL - Does the question stand alone without ANY references to external materials?\n\n"
+        f"- Self-contained: CRITICAL - Does the question stand alone without ANY references to external materials?\n"
+        f"- Content relevance: IMPORTANT - Questions based on low-relevance content (references, metadata, etc.) should receive lower scores\n\n"
         f"AUTOMATIC DISQUALIFIERS (score must be 1-3 if ANY are present):\n"
         f"- References to 'the text', 'the passage', 'the document', 'the paper', 'the study'\n"
         f"- References to 'the author', 'according to', 'as mentioned', 'as described'\n"
         f"- References to 'Appendix', 'Figure', 'Table', 'Section', 'Chapter'\n"
         f"- References to 'above', 'below', 'previously mentioned', 'following'\n"
-        f"- Any other references that assume the reader has access to external materials\n\n"
+        f"- Any other references that assume the reader has access to external materials\n"
+        f"- Content based primarily on references, copyright notices, or metadata (should score 1-4)\n\n"
+        f"SCORING ADJUSTMENT FOR CONTENT RELEVANCE:\n"
+        f"- If content relevance score is 1-4: Maximum question score should be 4\n"
+        f"- If content relevance score is 5-7: Maximum question score should be 7\n"
+        f"- If content relevance score is 8-10: Normal scoring applies\n\n"
         f"A truly self-contained question should read like a general knowledge question on the topic.\n\n"
         f"Provide your response in this format:\n"
         f"SCORE: <numeric score between 1-10>\n"
@@ -1945,6 +2046,7 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
         'type': 'multiple-choice',  # hyphenated as in NAT-MC.json
         'status': 'completed',
         'processing_time': processing_time,
+        'relevance_check': relevance_check,  # Store relevance information
         'step_times': {
             'summarize': step1_time,
             'generate': step2_time,
@@ -1963,6 +2065,23 @@ def generate_free_form_qa_pairs(chunk_id: str, chunk_text: str, model_name: str,
     """
     # Start timing the processing
     start_time = time.time()
+    
+    # --------------------------------------------------------------------
+    # Step 0: Check content relevance
+    # --------------------------------------------------------------------
+    relevance_check = check_content_relevance(chunk_text, model_name)
+    
+    # Skip non-relevant content
+    if not relevance_check['is_relevant']:
+        log_message(f"Chunk {chunk_id} skipped - not relevant to core content: {relevance_check['reasoning']}", 
+                   log_level="INFO", error_type="content_filter")
+        return {
+            'chunk_id': chunk_id,
+            'status': 'filtered_non_relevant',
+            'processing_time': time.time() - start_time,
+            'relevance_check': relevance_check,
+            'message': f"Skipped non-relevant content: {relevance_check['content_type']}"
+        }
     
     # --------------------------------------------------------------------
     # Step 1: Summarize & expand the chunk => augmented_chunk
@@ -2079,19 +2198,29 @@ def generate_free_form_qa_pairs(chunk_id: str, chunk_text: str, model_name: str,
         f"where 10 is perfect.\n\n"
         f"CONTENT:\n{chunk_text}\n\n"
         f"QUESTION AND ANSWER:\n{step2_output}\n\n"
+        f"CONTENT RELEVANCE INFO:\n"
+        f"- Relevance Score: {relevance_check['relevance_score']}/10\n"
+        f"- Content Type: {relevance_check['content_type']}\n"
+        f"- Relevance Reasoning: {relevance_check['reasoning']}\n\n"
         f"Rate based on these criteria:\n"
         f"- Clarity: Is the question clear and unambiguous?\n"
         f"- Accuracy: Is the answer factually correct and aligned with the source material?\n"
         f"- Difficulty: Is the difficulty appropriate (challenging but fair)?\n"
         f"- Specificity: Does the question target specific understanding rather than general knowledge?\n"
         f"- Educational value: Does answering demonstrate meaningful understanding?\n"
-        f"- Self-contained: CRITICAL - Does the question and answer stand alone without ANY references to external materials?\n\n"
+        f"- Self-contained: CRITICAL - Does the question and answer stand alone without ANY references to external materials?\n"
+        f"- Content relevance: IMPORTANT - Questions based on low-relevance content (references, metadata, etc.) should receive lower scores\n\n"
         f"AUTOMATIC DISQUALIFIERS (score must be 1-3 if ANY are present):\n"
         f"- References to 'the text', 'the passage', 'the document', 'the paper', 'the study'\n"
         f"- References to 'the author', 'according to', 'as mentioned', 'as described'\n"
         f"- References to 'Appendix', 'Figure', 'Table', 'Section', 'Chapter'\n"
         f"- References to 'above', 'below', 'previously mentioned', 'following'\n"
-        f"- Any other references that assume the reader has access to external materials\n\n"
+        f"- Any other references that assume the reader has access to external materials\n"
+        f"- Content based primarily on references, copyright notices, or metadata (should score 1-4)\n\n"
+        f"SCORING ADJUSTMENT FOR CONTENT RELEVANCE:\n"
+        f"- If content relevance score is 1-4: Maximum question score should be 4\n"
+        f"- If content relevance score is 5-7: Maximum question score should be 7\n"
+        f"- If content relevance score is 8-10: Normal scoring applies\n\n"
         f"A truly self-contained question should read like a general knowledge question on the topic.\n\n"
         f"Provide your response in this format:\n"
         f"SCORE: <numeric score between 1-10>\n"
@@ -2175,6 +2304,7 @@ def generate_free_form_qa_pairs(chunk_id: str, chunk_text: str, model_name: str,
         'type': 'free_form',
         'status': 'completed',
         'processing_time': processing_time,
+        'relevance_check': relevance_check,  # Store relevance information
         'step_times': {
             'summarize': step1_time,
             'generate': step2_time,

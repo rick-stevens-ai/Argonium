@@ -9,6 +9,7 @@ import re
 import sys
 import textwrap
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -1360,7 +1361,8 @@ Structure your response as an expert's stream of consciousness:
             predicted_answer = reasoning_data.get("prediction", {}).get(
                 "predicted_answer", ""
             )
-            correct_answer = question_data.get("answer", "")
+            # Use the correct option text instead of raw answer text
+            correct_answer = options[correct_option_index] if correct_option_index < len(options) else ""
 
             if predicted_answer and correct_answer:
                 grading_result = grade_answer(
@@ -1648,11 +1650,8 @@ def print_readable_output(
     global _current_model_name
     try:
         print("\n" + "=" * 80)
-        # Split the question to get just the question part (without options)
-        question_parts = question_data["question"].split("\n\n", 1)
-        question_only = (
-            question_parts[0] if len(question_parts) > 0 else question_data["question"]
-        )
+        # Get the full question text
+        question_only = question_data["question"]
         print(f"QUESTION: {question_only}")
         print("-" * 80)
 
@@ -1974,31 +1973,21 @@ def print_readable_output(
         print("=" * 80 + "\n")
 
 
-def generate_whole_trace_analysis(
-    reasoning_traces: List[Dict[str, Any]],
-    client: OpenAI,
-    model_name: str,
-    specialty: str = "expert",
-) -> Dict[str, Any]:
+def process_trace_batch(trace_batch: List[Tuple[int, Dict[str, Any]]]) -> Tuple[List[Dict], Dict[str, int], Dict[str, List]]:
     """
-    Generate a coherent narrative analysis from the collected reasoning traces.
-
+    Process a batch of traces in parallel to extract summaries and statistics.
+    
     Args:
-        reasoning_traces: List of reasoning trace dictionaries
-        model_name: The model name to use for generating the analysis
-        specialty: The expert specialty persona to adopt
-
+        trace_batch: List of (index, trace) tuples
+        
     Returns:
-        Dictionary containing the whole trace analysis
+        Tuple of (batch_summary, batch_stats, batch_confidence)
     """
-    log_message("Generating whole trace analysis...", log_level="INFO")
-
-    # Prepare a summary of all the reasoning traces
-    trace_summary = []
-    accuracy_stats = {"correct": 0, "incorrect": 0, "total": 0}
-    confidence_breakdown = {"high": [], "medium": [], "low": []}
-
-    for i, trace in enumerate(reasoning_traces):
+    batch_summary = []
+    batch_stats = {"correct": 0, "incorrect": 0, "total": 0, "ungraded": 0}
+    batch_confidence = {"high": [], "medium": [], "low": []}
+    
+    for i, trace in trace_batch:
         if "reasoning" not in trace:
             continue
 
@@ -2019,19 +2008,18 @@ def generate_whole_trace_analysis(
 
         # Update statistics (only count graded predictions)
         if is_correct is not None:
-            accuracy_stats["total"] += 1
+            batch_stats["total"] += 1
             if is_correct:
-                accuracy_stats["correct"] += 1
+                batch_stats["correct"] += 1
             else:
-                accuracy_stats["incorrect"] += 1
+                batch_stats["incorrect"] += 1
         else:
             # Track ungraded predictions
-            accuracy_stats.setdefault("ungraded", 0)
-            accuracy_stats["ungraded"] += 1
+            batch_stats["ungraded"] += 1
 
         # Track confidence levels (only for graded predictions)
-        if is_correct is not None and confidence.lower() in confidence_breakdown:
-            confidence_breakdown[confidence.lower()].append(
+        if is_correct is not None and confidence.lower() in batch_confidence:
+            batch_confidence[confidence.lower()].append(
                 {
                     "question_num": i + 1,
                     "correct": is_correct,
@@ -2040,7 +2028,7 @@ def generate_whole_trace_analysis(
             )
 
         # Create a summary entry
-        trace_summary.append(
+        batch_summary.append(
             {
                 "question_number": i + 1,
                 "question_snippet": question,
@@ -2056,6 +2044,84 @@ def generate_whole_trace_analysis(
                 + "...",
             }
         )
+    
+    return batch_summary, batch_stats, batch_confidence
+
+
+def generate_whole_trace_analysis(
+    reasoning_traces: List[Dict[str, Any]],
+    client: OpenAI,
+    model_name: str,
+    specialty: str = "expert",
+) -> Dict[str, Any]:
+    """
+    Generate a coherent narrative analysis from the collected reasoning traces.
+
+    Args:
+        reasoning_traces: List of reasoning trace dictionaries
+        model_name: The model name to use for generating the analysis
+        specialty: The expert specialty persona to adopt
+
+    Returns:
+        Dictionary containing the whole trace analysis
+    """
+    log_message("Generating whole trace analysis...", log_level="INFO")
+
+    # Prepare a summary of all the reasoning traces using parallel processing
+    log_message("Processing traces in parallel for analysis...", log_level="INFO")
+    
+    # Determine optimal batch size and number of workers
+    num_traces = len(reasoning_traces)
+    max_workers = min(4, max(1, num_traces // 20))  # 4 workers max, at least 20 traces per worker
+    batch_size = max(1, num_traces // max_workers)
+    
+    # Split traces into batches with their original indices
+    batches = []
+    for i in range(0, num_traces, batch_size):
+        batch = list(enumerate(reasoning_traces[i:i + batch_size], start=i))
+        if batch:  # Only add non-empty batches
+            batches.append(batch)
+    
+    log_message(f"Processing {num_traces} traces in {len(batches)} batches using {max_workers} workers", log_level="INFO")
+    
+    # Process batches in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_batch = {
+            executor.submit(process_trace_batch, batch): i 
+            for i, batch in enumerate(batches)
+        }
+        
+        # Collect results as they complete
+        batch_results = {}
+        for future in as_completed(future_to_batch):
+            batch_id = future_to_batch[future]
+            try:
+                batch_results[batch_id] = future.result()
+            except Exception as e:
+                log_message(f"Error processing batch {batch_id}: {e}", log_level="ERROR")
+                # Create empty result for failed batch
+                batch_results[batch_id] = ([], {"correct": 0, "incorrect": 0, "total": 0, "ungraded": 0}, {"high": [], "medium": [], "low": []})
+    
+    # Merge results from all batches in order
+    trace_summary = []
+    accuracy_stats = {"correct": 0, "incorrect": 0, "total": 0, "ungraded": 0}
+    confidence_breakdown = {"high": [], "medium": [], "low": []}
+    
+    for batch_id in sorted(batch_results.keys()):
+        batch_summary, batch_stats, batch_confidence = batch_results[batch_id]
+        
+        # Merge summaries
+        trace_summary.extend(batch_summary)
+        
+        # Merge statistics
+        for key in accuracy_stats:
+            accuracy_stats[key] += batch_stats.get(key, 0)
+        
+        # Merge confidence data
+        for level in confidence_breakdown:
+            confidence_breakdown[level].extend(batch_confidence.get(level, []))
+    
+    log_message(f"Processed {len(trace_summary)} trace summaries from {num_traces} total traces", log_level="INFO")
 
     # Calculate accuracy percentage
     accuracy_percentage = (
@@ -2539,6 +2605,9 @@ def main():
 
     # Check if grading model was used
     grading_model_used = any(trace.get("grading_result") for trace in results)
+    
+    # Check if dual prediction (Argonium-style) was used
+    dual_prediction_used = any(trace.get("dual_prediction") for trace in results)
 
     print(f"Total questions processed: {total_predictions}")
     print(f"Questions with grading: {total_graded}")
@@ -2546,11 +2615,104 @@ def main():
         print(f"Questions without grading: {ungraded_predictions} (accuracy unknown)")
 
     if total_graded > 0:
+        print(f"\n🔍 REASONING TRACES METHOD ACCURACY:")
         print(
             f"Overall accuracy: {correct_predictions}/{total_graded} correct predictions ({accuracy_percentage:.1f}%)"
         )
         print(f"Verification method: grading model")
         print(f"Grading model: {grading_model_name}")
+        
+        # Analyze dual prediction accuracy if available
+        if dual_prediction_used:
+            print(f"\n🎯 ARGONIUM-STYLE METHOD ACCURACY:")
+            
+            # Calculate Argonium method statistics
+            argonium_correct = 0
+            argonium_total = 0
+            both_correct = 0
+            both_incorrect = 0
+            reasoning_correct_argonium_wrong = 0
+            reasoning_wrong_argonium_correct = 0
+            agreement_but_both_wrong = 0
+            agreement_and_both_right = 0
+            
+            for trace in results:
+                if trace.get("prediction_correct") is not None and trace.get("dual_prediction"):
+                    dual_data = trace["dual_prediction"]
+                    argonium_pred = dual_data.get("argonium_prediction", {})
+                    
+                    # Check if argonium prediction is correct (compare with grading result)
+                    reasoning_correct = trace.get("prediction_correct", False)
+                    
+                    # For argonium accuracy, we need to check if the argonium prediction matches the correct answer
+                    # We'll use the same grading logic but for the argonium prediction
+                    argonium_answer = argonium_pred.get("predicted_answer", "")
+                    correct_answer = trace.get("correct_answer", "")
+                    reasoning_answer = trace.get("reasoning", {}).get("prediction", {}).get("predicted_answer", "")
+                    
+                    # Simple comparison for now - could be enhanced with grading model
+                    argonium_correct_bool = False
+                    if argonium_answer and correct_answer:
+                        # Extract numeric answers for comparison
+                        argonium_num = None
+                        reasoning_num = None
+                        
+                        # Try to extract numbers from answers
+                        import re
+                        argonium_match = re.search(r'\b(\d+)\b', str(argonium_answer))
+                        reasoning_match = re.search(r'\b(\d+)\b', str(reasoning_answer))
+                        correct_match = re.search(r'\b(\d+)\b', str(correct_answer))
+                        
+                        if argonium_match and correct_match:
+                            argonium_num = int(argonium_match.group(1))
+                            correct_num = int(correct_match.group(1))
+                            argonium_correct_bool = (argonium_num == correct_num)
+                        
+                        if reasoning_match:
+                            reasoning_num = int(reasoning_match.group(1))
+                    
+                    argonium_total += 1
+                    if argonium_correct_bool:
+                        argonium_correct += 1
+                    
+                    # Agreement analysis
+                    if reasoning_correct and argonium_correct_bool:
+                        both_correct += 1
+                        agreement_and_both_right += 1
+                    elif not reasoning_correct and not argonium_correct_bool:
+                        both_incorrect += 1
+                        # Check if they agreed on the same wrong answer
+                        if argonium_num == reasoning_num:
+                            agreement_but_both_wrong += 1
+                    elif reasoning_correct and not argonium_correct_bool:
+                        reasoning_correct_argonium_wrong += 1
+                    elif not reasoning_correct and argonium_correct_bool:
+                        reasoning_wrong_argonium_correct += 1
+            
+            if argonium_total > 0:
+                argonium_accuracy = (argonium_correct / argonium_total) * 100
+                print(f"Overall accuracy: {argonium_correct}/{argonium_total} correct predictions ({argonium_accuracy:.1f}%)")
+                
+                print(f"\n📊 METHOD COMPARISON ANALYSIS:")
+                print(f"Questions with both methods: {argonium_total}")
+                print(f"Both methods correct: {both_correct} ({(both_correct/argonium_total)*100:.1f}%)")
+                print(f"Both methods incorrect: {both_incorrect} ({(both_incorrect/argonium_total)*100:.1f}%)")
+                print(f"Reasoning correct, Argonium wrong: {reasoning_correct_argonium_wrong}")
+                print(f"Reasoning wrong, Argonium correct: {reasoning_wrong_argonium_correct}")
+                
+                print(f"\n⚠️  AGREEMENT BUT BOTH WRONG:")
+                print(f"Cases where methods agree but both incorrect: {agreement_but_both_wrong}")
+                if agreement_but_both_wrong > 0:
+                    print(f"This represents {(agreement_but_both_wrong/argonium_total)*100:.1f}% of all dual predictions")
+                
+                total_agreement = agreement_and_both_right + agreement_but_both_wrong
+                if argonium_total > 0:
+                    agreement_rate = (total_agreement / argonium_total) * 100
+                    print(f"\n🤝 OVERALL AGREEMENT RATE: {total_agreement}/{argonium_total} ({agreement_rate:.1f}%)")
+            else:
+                print("No dual predictions available for comparison")
+        else:
+            print("\n💡 Use --dual-prediction to enable Argonium-style method comparison")
     else:
         print("Overall accuracy: No predictions could be graded (0 graded questions)")
         print("Verification method: None (no grading model available)")
