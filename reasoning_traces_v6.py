@@ -552,19 +552,21 @@ def generate_argonium_style_prediction(
     Returns:
         Dictionary with argonium prediction results
     """
-    # Detect choice identifier type (letter/number) using unified logic
-    full_question = (
-        question + "\n\n" + "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
-    )
+    # Reconstruct full question with options to match argonium_score_parallel format
+    full_question = question
+    if options:
+        full_question += "\n\n" + "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+    
+    # Detect choice identifier type (letter/number) using unified logic - same as argonium_score_parallel
     id_type_in_question = detect_choice_identifier_type(full_question)
 
-    # Determine label format for prompts
+    # Determine label format for prompts - exact match to argonium_score_parallel
     if id_type_in_question == "number":
         label_format = "number (1, 2, 3, etc.)"
     else:
         label_format = "letter (A, B, C, etc.)"
 
-    # System prompt designed for multiple-choice questions (adapted from Argonium)
+    # System prompt designed for multiple-choice questions - exact match to argonium_score_parallel
     system_message = (
         "You are an expert at multiple-choice questions. "
         "Think through the question step by step, but provide only a concise final answer. "
@@ -574,19 +576,15 @@ def generate_argonium_style_prediction(
         "Do not include the question restatement or list of alternatives in your response."
     )
 
+    # User message - exact match to argonium_score_parallel 
     user_message = (
         f"Please answer this multiple-choice question. Think through it carefully:\n"
         f"- First, restate the question to yourself\n"
         f"- Then, consider all the alternative answers provided\n"
         f"- Finally, provide your response with ONLY the correct {label_format} "
         f"followed by 2-3 sentences explaining why this choice is correct.\n\n"
-        f"Question:\n{question}\n\n"
-        f"Options:\n"
+        f"Question:\n{full_question}"
     )
-
-    # Add options to the prompt
-    for i, option in enumerate(options):
-        user_message += f"{i+1}. {option}\n"
 
     try:
         # Create the completion request with low temperature for consistency

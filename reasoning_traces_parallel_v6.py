@@ -558,19 +558,21 @@ def generate_argonium_style_prediction(
     Returns:
         Dictionary with argonium prediction results
     """
-    # Detect choice identifier type (letter/number) using unified logic
-    full_question = (
-        question + "\n\n" + "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
-    )
+    # Reconstruct full question with options to match argonium_score_parallel format
+    full_question = question
+    if options:
+        full_question += "\n\n" + "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+    
+    # Detect choice identifier type (letter/number) using unified logic - same as argonium_score_parallel
     id_type_in_question = detect_choice_identifier_type(full_question)
 
-    # Determine label format for prompts
+    # Determine label format for prompts - exact match to argonium_score_parallel
     if id_type_in_question == "number":
         label_format = "number (1, 2, 3, etc.)"
     else:
         label_format = "letter (A, B, C, etc.)"
 
-    # System prompt designed for multiple-choice questions (adapted from Argonium)
+    # System prompt designed for multiple-choice questions - exact match to argonium_score_parallel
     system_message = (
         "You are an expert at multiple-choice questions. "
         "Think through the question step by step, but provide only a concise final answer. "
@@ -580,19 +582,15 @@ def generate_argonium_style_prediction(
         "Do not include the question restatement or list of alternatives in your response."
     )
 
+    # User message - exact match to argonium_score_parallel 
     user_message = (
         f"Please answer this multiple-choice question. Think through it carefully:\n"
         f"- First, restate the question to yourself\n"
         f"- Then, consider all the alternative answers provided\n"
         f"- Finally, provide your response with ONLY the correct {label_format} "
         f"followed by 2-3 sentences explaining why this choice is correct.\n\n"
-        f"Question:\n{question}\n\n"
-        f"Options:\n"
+        f"Question:\n{full_question}"
     )
-
-    # Add options to the prompt
-    for i, option in enumerate(options):
-        user_message += f"{i+1}. {option}\n"
 
     try:
         # Create the completion request with low temperature for consistency
@@ -2736,6 +2734,39 @@ def main():
         args.workers,
     )
 
+    # Add argonium file comparison if available
+    if argonium_results_map:
+        for i, trace in enumerate(results):
+            current_question_index = starting_index + i + 1
+            if current_question_index in argonium_results_map:
+                argonium_result = argonium_results_map[current_question_index]
+                
+                # Verify question match using grading model
+                if grading_client and grading_model_name:
+                    question_match = verify_question_match(
+                        mc_questions[i].get("question", ""),
+                        argonium_result.get("question", ""),
+                        grading_client,
+                        grading_model_name
+                    )
+                    trace["argonium_file_comparison"] = {
+                        "question_match": question_match,
+                        "argonium_result": argonium_result,
+                        "argonium_file_path": args.argonium_results
+                    }
+                    
+                    if not question_match.get("is_match", False):
+                        log_message(f"Warning: Question {current_question_index} doesn't match argonium file question", log_level="WARNING")
+                    else:
+                        log_message(f"Question {current_question_index} verified to match argonium file", log_level="DEBUG")
+                else:
+                    # Store without verification if no grading model
+                    trace["argonium_file_comparison"] = {
+                        "question_match": {"is_match": None, "reasoning": "No grading model available for verification"},
+                        "argonium_result": argonium_result,
+                        "argonium_file_path": args.argonium_results
+                    }
+
     # Print readable output to console for each result
     for i, (question, trace) in enumerate(zip(mc_questions, results)):
         print_readable_output(
@@ -3048,6 +3079,78 @@ def main():
             print(
                 f"• Low confidence: {low_confidence_correct}/{low_confidence_total} correct ({low_acc:.1f}%)"
             )
+
+    # Argonium file comparison analysis if available
+    if argonium_data:
+        print("\n📋 ARGONIUM FILE COMPARISON ANALYSIS:")
+        print("=" * 80)
+        
+        # Count questions with file comparisons
+        file_comparison_count = 0
+        matched_questions = 0
+        file_vs_new_matches = 0
+        file_vs_new_discrepancies = 0
+        argonium_file_accuracy = argonium_data.get('metadata', {}).get('overall_accuracy', 0) * 100
+        
+        for trace in results:
+            if trace.get("argonium_file_comparison"):
+                file_comparison_count += 1
+                
+                comparison = trace["argonium_file_comparison"]
+                question_match = comparison.get("question_match", {})
+                argonium_file_result = comparison.get("argonium_result", {})
+                
+                if question_match.get("is_match", False):
+                    matched_questions += 1
+                    
+                    # Compare file result with new argonium-style prediction if available
+                    if trace.get("dual_prediction"):
+                        file_score = argonium_file_result.get("score", 0)
+                        
+                        # Get new argonium prediction correctness
+                        dual_data = trace["dual_prediction"]
+                        argonium_pred = dual_data.get("argonium_prediction", {})
+                        argonium_answer = argonium_pred.get("predicted_answer", "")
+                        correct_answer = trace.get("correct_answer", "")
+                        
+                        # Use grading model to check new prediction if available
+                        new_argonium_correct = False
+                        if argonium_answer and correct_answer and grading_client and grading_model_name:
+                            question_text = trace.get("question", "")
+                            options = trace.get("options", [])
+                            
+                            grading_result = grade_answer(
+                                predicted_answer=argonium_answer,
+                                correct_answer=correct_answer,
+                                question_text=question_text,
+                                options=options,
+                                grading_client=grading_client,
+                                grading_model_name=grading_model_name,
+                                verbose=False
+                            )
+                            new_argonium_correct = grading_result.get("is_correct", False)
+                        
+                        # Compare results
+                        file_correct = (file_score >= 1)
+                        if file_correct == new_argonium_correct:
+                            file_vs_new_matches += 1
+                        else:
+                            file_vs_new_discrepancies += 1
+        
+        print(f"Argonium file loaded: {args.argonium_results}")
+        print(f"Argonium file accuracy: {argonium_file_accuracy:.1f}%")
+        print(f"Questions with file comparison: {file_comparison_count}")
+        print(f"Questions verified to match: {matched_questions}")
+        
+        if matched_questions > 0 and dual_prediction_used:
+            print(f"\n🔄 FILE vs NEW ARGONIUM-STYLE PREDICTIONS:")
+            print(f"Agreements: {file_vs_new_matches}")
+            print(f"Discrepancies: {file_vs_new_discrepancies}")
+            if file_vs_new_matches + file_vs_new_discrepancies > 0:
+                agreement_pct = (file_vs_new_matches / (file_vs_new_matches + file_vs_new_discrepancies)) * 100
+                print(f"Agreement rate: {agreement_pct:.1f}%")
+        
+        print("=" * 60)
 
     print("=" * 80)
 
