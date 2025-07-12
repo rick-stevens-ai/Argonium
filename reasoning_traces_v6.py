@@ -2650,26 +2650,35 @@ def main():
                     correct_answer = trace.get("correct_answer", "")
                     reasoning_answer = trace.get("reasoning", {}).get("prediction", {}).get("predicted_answer", "")
                     
-                    # Simple comparison for now - could be enhanced with grading model
+                    # Use proper grading model for argonium accuracy calculation
                     argonium_correct_bool = False
-                    if argonium_answer and correct_answer:
-                        # Extract numeric answers for comparison
-                        argonium_num = None
-                        reasoning_num = None
+                    if argonium_answer and correct_answer and grading_client is not None and grading_model_name is not None:
+                        # Get question data for proper grading
+                        question_text = trace.get("question", "")
+                        options = trace.get("options", [])
                         
-                        # Try to extract numbers from answers
+                        # Use the same grading function as for reasoning traces
+                        argonium_grading_result = grade_answer(
+                            predicted_answer=argonium_answer,
+                            correct_answer=correct_answer,
+                            question_text=question_text,
+                            options=options,
+                            grading_client=grading_client,
+                            grading_model_name=grading_model_name,
+                            verbose=False  # Keep this quiet to avoid too much output
+                        )
+                        
+                        argonium_correct_bool = argonium_grading_result.get("is_correct", False)
+                    elif argonium_answer and correct_answer:
+                        # Fallback to simple regex matching if no grading model available
                         import re
                         argonium_match = re.search(r'\b(\d+)\b', str(argonium_answer))
-                        reasoning_match = re.search(r'\b(\d+)\b', str(reasoning_answer))
                         correct_match = re.search(r'\b(\d+)\b', str(correct_answer))
                         
                         if argonium_match and correct_match:
                             argonium_num = int(argonium_match.group(1))
                             correct_num = int(correct_match.group(1))
                             argonium_correct_bool = (argonium_num == correct_num)
-                        
-                        if reasoning_match:
-                            reasoning_num = int(reasoning_match.group(1))
                     
                     argonium_total += 1
                     if argonium_correct_bool:
