@@ -717,7 +717,7 @@ Answer: {argonium_pred}
 Response: {argonium_response}
 
 TASK: 
-If both methods give the SAME answer, simply state: "Both methods agree on the same answer: [answer]. The reasoning approaches differ but lead to the same conclusion."
+If both Reasoning Traces and Argonium-Style methods give the SAME answer, simply state: "Both methods agree on the same answer: [answer]. The reasoning approaches differ but lead to the same conclusion."
 
 If the methods give DIFFERENT answers, write a clear paragraph that:
 1. States which answer you believe is correct as a {specialty} expert
@@ -2694,21 +2694,21 @@ def main():
                 print(f"Overall accuracy: {argonium_correct}/{argonium_total} correct predictions ({argonium_accuracy:.1f}%)")
                 
                 print(f"\n📊 METHOD COMPARISON ANALYSIS:")
-                print(f"Questions with both methods: {argonium_total}")
-                print(f"Both methods correct: {both_correct} ({(both_correct/argonium_total)*100:.1f}%)")
-                print(f"Both methods incorrect: {both_incorrect} ({(both_incorrect/argonium_total)*100:.1f}%)")
-                print(f"Reasoning correct, Argonium wrong: {reasoning_correct_argonium_wrong}")
-                print(f"Reasoning wrong, Argonium correct: {reasoning_wrong_argonium_correct}")
+                print(f"Questions with both Reasoning Traces + Argonium-Style predictions: {argonium_total}")
+                print(f"Both Reasoning Traces and Argonium-Style correct: {both_correct} ({(both_correct/argonium_total)*100:.1f}%)")
+                print(f"Both Reasoning Traces and Argonium-Style incorrect: {both_incorrect} ({(both_incorrect/argonium_total)*100:.1f}%)")
+                print(f"Reasoning Traces correct, Argonium-Style wrong: {reasoning_correct_argonium_wrong}")
+                print(f"Reasoning Traces wrong, Argonium-Style correct: {reasoning_wrong_argonium_correct}")
                 
                 print(f"\n⚠️  AGREEMENT BUT BOTH WRONG:")
-                print(f"Cases where methods agree but both incorrect: {agreement_but_both_wrong}")
+                print(f"Cases where Reasoning Traces and Argonium-Style agree but both incorrect: {agreement_but_both_wrong}")
                 if agreement_but_both_wrong > 0:
                     print(f"This represents {(agreement_but_both_wrong/argonium_total)*100:.1f}% of all dual predictions")
                 
                 total_agreement = agreement_and_both_right + agreement_but_both_wrong
                 if argonium_total > 0:
                     agreement_rate = (total_agreement / argonium_total) * 100
-                    print(f"\n🤝 OVERALL AGREEMENT RATE: {total_agreement}/{argonium_total} ({agreement_rate:.1f}%)")
+                    print(f"\n🤝 OVERALL AGREEMENT RATE (Reasoning Traces ↔ Argonium-Style): {total_agreement}/{argonium_total} ({agreement_rate:.1f}%)")
             else:
                 print("No dual predictions available for comparison")
         else:
