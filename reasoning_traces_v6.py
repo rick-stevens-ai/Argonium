@@ -2652,6 +2652,21 @@ def main():
                     
                     # Use proper grading model for argonium accuracy calculation
                     argonium_correct_bool = False
+                    argonium_num = None
+                    reasoning_num = None
+                    
+                    # Always try to extract numeric values for agreement analysis
+                    import re
+                    if argonium_answer:
+                        argonium_match = re.search(r'\b(\d+)\b', str(argonium_answer))
+                        if argonium_match:
+                            argonium_num = int(argonium_match.group(1))
+                    
+                    if reasoning_answer:
+                        reasoning_match = re.search(r'\b(\d+)\b', str(reasoning_answer))
+                        if reasoning_match:
+                            reasoning_num = int(reasoning_match.group(1))
+                    
                     if argonium_answer and correct_answer and grading_client is not None and grading_model_name is not None:
                         # Get question data for proper grading
                         question_text = trace.get("question", "")
@@ -2671,12 +2686,9 @@ def main():
                         argonium_correct_bool = argonium_grading_result.get("is_correct", False)
                     elif argonium_answer and correct_answer:
                         # Fallback to simple regex matching if no grading model available
-                        import re
-                        argonium_match = re.search(r'\b(\d+)\b', str(argonium_answer))
                         correct_match = re.search(r'\b(\d+)\b', str(correct_answer))
                         
-                        if argonium_match and correct_match:
-                            argonium_num = int(argonium_match.group(1))
+                        if argonium_num is not None and correct_match:
                             correct_num = int(correct_match.group(1))
                             argonium_correct_bool = (argonium_num == correct_num)
                     
@@ -2691,7 +2703,7 @@ def main():
                     elif not reasoning_correct and not argonium_correct_bool:
                         both_incorrect += 1
                         # Check if they agreed on the same wrong answer
-                        if argonium_num == reasoning_num:
+                        if argonium_num is not None and reasoning_num is not None and argonium_num == reasoning_num:
                             agreement_but_both_wrong += 1
                     elif reasoning_correct and not argonium_correct_bool:
                         reasoning_correct_argonium_wrong += 1
