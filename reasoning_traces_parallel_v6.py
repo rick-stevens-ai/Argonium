@@ -124,6 +124,10 @@ def parse_arguments():
         help="Output file to capture incorrect answers with both predicted and correct answers",
     )
     advanced_group.add_argument(
+        "--argonium-results",
+        help="JSON file with existing argonium results (from argonium_score_parallel) to compare against",
+    )
+    advanced_group.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -891,6 +895,102 @@ IMPORTANT: Be generous in your interpretation - if the predicted answer clearly 
             "error": str(e),
             "grading_input": "",
             "grading_output": "",
+        }
+
+
+def load_argonium_results(argonium_file: str) -> Dict[str, Any]:
+    """
+    Load and parse argonium results file from argonium_score_parallel.
+    
+    Args:
+        argonium_file: Path to the argonium results JSON file
+        
+    Returns:
+        Dictionary with parsed argonium results
+    """
+    try:
+        with open(argonium_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        log_message(f"Loaded argonium results from {argonium_file}")
+        log_message(f"Argonium file contains {len(data.get('results', []))} questions")
+        log_message(f"Argonium overall accuracy: {data.get('metadata', {}).get('overall_accuracy', 'unknown'):.1%}")
+        
+        return data
+        
+    except Exception as e:
+        log_message(f"Error loading argonium results file {argonium_file}: {e}", log_level="ERROR")
+        return None
+
+
+def verify_question_match(reasoning_question: str, argonium_question: str, 
+                         grading_client: OpenAI, grading_model_name: str) -> Dict[str, Any]:
+    """
+    Use grading model to verify that two questions are the same.
+    
+    Args:
+        reasoning_question: Question from reasoning traces
+        argonium_question: Question from argonium results file
+        grading_client: OpenAI client for grading
+        grading_model_name: Model name for grading
+        
+    Returns:
+        Dictionary with verification results
+    """
+    try:
+        verification_prompt = f"""You are comparing two questions to determine if they are identical or equivalent.
+
+QUESTION A:
+{reasoning_question}
+
+QUESTION B:
+{argonium_question}
+
+TASK:
+Determine if these questions are the same. They should be considered a match if:
+1. The text is identical or nearly identical (ignoring minor formatting differences)
+2. The core question being asked is the same
+3. All answer options are present and in the same order
+
+Respond with a JSON object:
+{{
+  "is_match": true/false,
+  "confidence": "high/medium/low",
+  "reasoning": "Brief explanation of your determination"
+}}"""
+
+        response = grading_client.chat.completions.create(
+            model=grading_model_name,
+            messages=[
+                {"role": "system", "content": "You are an expert at comparing questions for identity. Be thorough but precise."},
+                {"role": "user", "content": verification_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=300
+        )
+        
+        output = response.choices[0].message.content.strip()
+        
+        try:
+            result = json.loads(output)
+            result["verification_successful"] = True
+            return result
+        except json.JSONDecodeError:
+            return {
+                "is_match": False,
+                "confidence": "low", 
+                "reasoning": "Failed to parse verification response",
+                "verification_successful": False,
+                "raw_output": output
+            }
+            
+    except Exception as e:
+        return {
+            "is_match": False,
+            "confidence": "low",
+            "reasoning": f"Error during verification: {str(e)}",
+            "verification_successful": False,
+            "error": str(e)
         }
 
 
@@ -2556,6 +2656,21 @@ def main():
                 "Error: Grading model is required but not specified", log_level="ERROR"
             )
             sys.exit(1)
+
+    # Load argonium results for comparison if provided
+    argonium_data = None
+    argonium_results_map = {}
+    if args.argonium_results:
+        argonium_data = load_argonium_results(args.argonium_results)
+        if argonium_data:
+            # Create a map of question_id to results for easier lookup
+            for result in argonium_data.get('results', []):
+                question_id = result.get('question_id')
+                if question_id:
+                    argonium_results_map[question_id] = result
+            log_message(f"Mapped {len(argonium_results_map)} argonium results for comparison")
+        else:
+            log_message("Failed to load argonium results file", log_level="ERROR")
 
     # Initialize results list
     results = []
