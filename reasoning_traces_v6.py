@@ -2216,6 +2216,50 @@ def print_readable_output(
             )
             print(formatted_response)
 
+            # Add file comparison if available
+            if reasoning_trace.get("argonium_file_comparison"):
+                file_comparison = reasoning_trace["argonium_file_comparison"]
+                argonium_file_result = file_comparison.get("argonium_result", {})
+                question_match = file_comparison.get("question_match", {})
+                
+                print(f"\n📋 COMPARISON WITH ARGONIUM FILE:")
+                if question_match.get("is_match", False):
+                    file_answer = argonium_file_result.get("model_answer", "")
+                    file_score = argonium_file_result.get("score", 0)
+                    file_correct = file_score >= 1
+                    
+                    new_answer = argonium_pred.get("predicted_answer", "Unknown")
+                    new_extraction_successful = argonium_pred.get("extraction_successful", False)
+                    
+                    print(f"   File prediction: {file_answer[:100]}{'...' if len(file_answer) > 100 else ''}")
+                    print(f"   File score: {file_score} ({'✓ Correct' if file_correct else '✗ Incorrect'})")
+                    print(f"   New prediction: {new_answer}")
+                    print(f"   New extraction: {'✓ Successful' if new_extraction_successful else '✗ Failed'}")
+                    
+                    # Detailed comparison
+                    if file_correct and new_extraction_successful:
+                        print("   📊 Comparison: Both methods succeeded")
+                    elif file_correct and not new_extraction_successful:
+                        print("   ⚠️  Comparison: File method succeeded, new method failed")
+                    elif not file_correct and new_extraction_successful:
+                        print("   📈 Comparison: File method failed, new method succeeded") 
+                    else:
+                        print("   ❌ Comparison: Both methods failed")
+                        
+                    # Answer content comparison
+                    file_choice = argonium_file_result.get("evaluation", {}).get("model_choice", "")
+                    new_choice = argonium_pred.get("extracted_choice", "")
+                    
+                    if file_choice and new_choice:
+                        if str(file_choice).upper() == str(new_choice).upper():
+                            print("   🎯 Answer match: Same choice selected")
+                        else:
+                            print(f"   🔄 Answer difference: File='{file_choice}', New='{new_choice}'")
+                    
+                else:
+                    print("   ⚠️  Question verification failed - comparison skipped")
+                    print(f"   Reason: {question_match.get('reasoning', 'Unknown')}")
+
             print("\n" + "-" * 80)
             print("🤔 COMPARISON ANALYSIS:")
             print("-" * 80)
@@ -3158,6 +3202,70 @@ def main():
             if file_vs_new_matches + file_vs_new_discrepancies > 0:
                 agreement_pct = (file_vs_new_matches / (file_vs_new_matches + file_vs_new_discrepancies)) * 100
                 print(f"Agreement rate: {agreement_pct:.1f}%")
+                
+            # Detailed discrepancy analysis
+            if file_vs_new_discrepancies > 0:
+                print(f"\n🔍 DETAILED DISCREPANCY ANALYSIS:")
+                file_correct_new_wrong = 0
+                file_wrong_new_correct = 0
+                both_wrong_different_answers = 0
+                extraction_failures = 0
+                
+                for trace in results:
+                    if trace.get("argonium_file_comparison") and trace.get("dual_prediction"):
+                        comparison = trace["argonium_file_comparison"]
+                        question_match = comparison.get("question_match", {})
+                        
+                        if question_match.get("is_match", False):
+                            argonium_file_result = comparison.get("argonium_result", {})
+                            file_score = argonium_file_result.get("score", 0)
+                            file_correct = (file_score >= 1)
+                            
+                            dual_data = trace["dual_prediction"]
+                            argonium_pred = dual_data.get("argonium_prediction", {})
+                            new_extraction_successful = argonium_pred.get("extraction_successful", False)
+                            
+                            # Check for correctness using grading if available
+                            new_argonium_correct = False
+                            if new_extraction_successful and grading_client and grading_model_name:
+                                argonium_answer = argonium_pred.get("predicted_answer", "")
+                                correct_answer = trace.get("correct_answer", "")
+                                question_text = trace.get("question", "")
+                                options = trace.get("options", [])
+                                
+                                if argonium_answer and correct_answer:
+                                    grading_result = grade_answer(
+                                        predicted_answer=argonium_answer,
+                                        correct_answer=correct_answer,
+                                        question_text=question_text,
+                                        options=options,
+                                        grading_client=grading_client,
+                                        grading_model_name=grading_model_name,
+                                        verbose=False
+                                    )
+                                    new_argonium_correct = grading_result.get("is_correct", False)
+                            
+                            # Categorize discrepancies
+                            if file_correct != new_argonium_correct:
+                                if file_correct and not new_argonium_correct:
+                                    file_correct_new_wrong += 1
+                                elif not file_correct and new_argonium_correct:
+                                    file_wrong_new_correct += 1
+                                elif not file_correct and not new_argonium_correct:
+                                    both_wrong_different_answers += 1
+                            
+                            if not new_extraction_successful:
+                                extraction_failures += 1
+                
+                print(f"  File correct, new wrong: {file_correct_new_wrong}")
+                print(f"  File wrong, new correct: {file_wrong_new_correct}")
+                print(f"  Both wrong, different answers: {both_wrong_different_answers}")
+                print(f"  New method extraction failures: {extraction_failures}")
+                
+                if file_correct_new_wrong > 0:
+                    print(f"  ⚠️  Regression: {file_correct_new_wrong} cases where file method was better")
+                if file_wrong_new_correct > 0:
+                    print(f"  📈 Improvement: {file_wrong_new_correct} cases where new method is better")
         
         print("=" * 60)
 
