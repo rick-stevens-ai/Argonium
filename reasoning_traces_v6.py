@@ -724,10 +724,18 @@ def generate_argonium_style_prediction(
     Returns:
         Dictionary with argonium prediction results
     """
-    # Reconstruct full question with options to match argonium_score_parallel format
+    # Handle question format exactly like argonium_score_parallel
+    # Check if question already has embedded options (like the HR dataset)
     full_question = question
-    if options:
+    has_embedded_options = bool(re.search(r"(?:^|\n)\s*([1-9])[.):]\s", question))
+    
+    if not has_embedded_options and options:
+        # Only reconstruct if options are separate (like make_v21 format)
         full_question += "\n\n" + "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+        log_message("Reconstructed question with separate options", log_level="DEBUG")
+    else:
+        # Question already has embedded options (like HR dataset) - use as-is
+        log_message("Using question with embedded options as-is", log_level="DEBUG")
     
     # Detect choice identifier type (letter/number) using unified logic - same as argonium_score_parallel
     id_type_in_question = detect_choice_identifier_type(full_question)
@@ -771,7 +779,6 @@ def generate_argonium_style_prediction(
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message},
             ],
-            "max_tokens": 500,
         }
 
         # Add temperature only for models that support it
