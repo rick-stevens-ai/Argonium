@@ -1463,27 +1463,27 @@ Structure your response as an expert's stream of consciousness:
                 argonium_model_answer = argonium_prediction.get("model_answer", "")
                 
                 if argonium_model_answer and correct_answer:
-                    # Use the same evaluate_answer function as argonium_score_parallel
-                    grader_config = {
-                        "api_key": grading_client.api_key,
-                        "api_base": grading_client.base_url,
-                        "model_name": grading_model_name,
-                    }
-                    
-                    argonium_grading_result = evaluate_answer(
-                        question_text, correct_answer, argonium_model_answer, grader_config, question_format="mc"
+                    # Use the grading function to evaluate the argonium-style prediction
+                    argonium_grading_result = grade_answer(
+                        predicted_answer=argonium_model_answer,
+                        correct_answer=correct_answer,
+                        question_text=question_text,
+                        options=options,
+                        grading_client=grading_client,
+                        grading_model_name=grading_model_name,
+                        verbose=verbose_grading,
                     )
                     
                     # Add grading results to argonium prediction
                     argonium_prediction["grading_result"] = argonium_grading_result
-                    argonium_prediction["prediction_correct"] = argonium_grading_result.get("match", False)
-                    argonium_prediction["predicted_answer"] = argonium_grading_result.get("model_choice", "Could not determine")
-                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("match", False)
+                    argonium_prediction["prediction_correct"] = argonium_grading_result.get("is_correct", False)
+                    argonium_prediction["predicted_answer"] = argonium_grading_result.get("extracted_option_number", "Could not determine")
+                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("is_correct", False)
                     
                     # Extract predicted option number if available
-                    if argonium_grading_result.get("model_choice", "unknown") != "unknown":
+                    if argonium_grading_result.get("extracted_option_number", "unknown") != "unknown":
                         try:
-                            argonium_prediction["predicted_num"] = int(argonium_grading_result["model_choice"])
+                            argonium_prediction["predicted_num"] = int(argonium_grading_result["extracted_option_number"])
                         except (ValueError, TypeError):
                             argonium_prediction["predicted_num"] = None
                     else:
