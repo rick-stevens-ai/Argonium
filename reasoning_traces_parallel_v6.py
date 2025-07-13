@@ -2164,65 +2164,90 @@ def print_readable_output(
                     else raw_response
                 )
         else:
-            # Print thought process for each option
-            thought_process = reasoning_trace["reasoning"].get("thought_process", {})
+            # Print reasoning based on the mode used
+            reasoning_data = reasoning_trace["reasoning"]
+            
+            # Check if this is focused mode
+            if "key_principle" in reasoning_data:
+                # Focused mode display
+                print(f"\n🎯 KEY PRINCIPLE: {reasoning_data.get('key_principle', 'Not specified')}")
+                
+                quick_elim = reasoning_data.get('quick_elimination', {})
+                if quick_elim.get('dismissed_options'):
+                    print(f"\n❌ QUICKLY ELIMINATED: Options {', '.join(quick_elim.get('dismissed_options', []))}")
+                    print(f"   Reasoning: {quick_elim.get('reasoning', 'Not specified')}")
+                
+                focused_analysis = reasoning_data.get('focused_analysis', {})
+                if focused_analysis.get('viable_options'):
+                    print(f"\n🔍 FOCUSED ANALYSIS: Options {', '.join(focused_analysis.get('viable_options', []))}")
+                    print(f"   {focused_analysis.get('detailed_reasoning', 'Not specified')}")
+                    
+            # Check if this is efficient mode
+            elif "quick_analysis" in reasoning_data:
+                # Efficient mode display
+                print(f"\n⚡ QUICK ANALYSIS: {reasoning_data.get('quick_analysis', 'Not specified')}")
+                print(f"\n🚫 ELIMINATION: {reasoning_data.get('elimination', 'Not specified')}")
+                
+            else:
+                # Standard detailed mode - Print thought process for each option
+                thought_process = reasoning_data.get("thought_process", {})
 
-            # Sort option keys numerically
-            option_keys = sorted(
-                [k for k in thought_process.keys() if k.startswith("option_")],
-                key=lambda x: (
-                    int(x.split("_")[-1])
-                    if x.split("_")[-1].isdigit()
-                    else float("inf")
-                ),
-            )
+                # Sort option keys numerically
+                option_keys = sorted(
+                    [k for k in thought_process.keys() if k.startswith("option_")],
+                    key=lambda x: (
+                        int(x.split("_")[-1])
+                        if x.split("_")[-1].isdigit()
+                        else float("inf")
+                    ),
+                )
 
-            # Print options in order
-            for opt_key in option_keys:
-                try:
-                    opt_idx = int(opt_key.split("_")[-1]) - 1
-                    if opt_idx >= 0 and opt_idx < len(options):
-                        print(f"\n💭 OPTION {opt_idx+1}: {options[opt_idx]}")
+                # Print options in order
+                for opt_key in option_keys:
+                    try:
+                        opt_idx = int(opt_key.split("_")[-1]) - 1
+                        if opt_idx >= 0 and opt_idx < len(options):
+                            print(f"\n💭 OPTION {opt_idx+1}: {options[opt_idx]}")
 
-                        # Get the thoughts and clean them
-                        thoughts = thought_process[opt_key]
+                            # Get the thoughts and clean them
+                            thoughts = thought_process[opt_key]
 
-                        # Format the thought process text with indentation
-                        if isinstance(thoughts, str):
-                            # Clean the text to handle potential formatting issues
-                            clean_text = re.sub(
-                                r'"\s*$', "", thoughts
-                            )  # Remove trailing quotes
-                            clean_text = re.sub(
-                                r'^\s*"', "", clean_text
-                            )  # Remove leading quotes
+                            # Format the thought process text with indentation
+                            if isinstance(thoughts, str):
+                                # Clean the text to handle potential formatting issues
+                                clean_text = re.sub(
+                                    r'"\s*$', "", thoughts
+                                )  # Remove trailing quotes
+                                clean_text = re.sub(
+                                    r'^\s*"', "", clean_text
+                                )  # Remove leading quotes
 
-                            # Handle remaining escape sequences
-                            clean_text = clean_text.replace("\\", "")
+                                # Handle remaining escape sequences
+                                clean_text = clean_text.replace("\\", "")
 
-                            # Format with indentation
-                            formatted_thoughts = "\n".join(
-                                "   " + line for line in clean_text.split("\n")
-                            )
-                            print(formatted_thoughts)
-                        elif isinstance(thoughts, dict):
-                            # Convert dict to indented text
-                            for k, v in thoughts.items():
-                                print(f"   {k}:")
-                                if isinstance(v, str):
-                                    print(
-                                        "\n".join(
-                                            "      " + line for line in v.split("\n")
+                                # Format with indentation
+                                formatted_thoughts = "\n".join(
+                                    "   " + line for line in clean_text.split("\n")
+                                )
+                                print(formatted_thoughts)
+                            elif isinstance(thoughts, dict):
+                                # Convert dict to indented text
+                                for k, v in thoughts.items():
+                                    print(f"   {k}:")
+                                    if isinstance(v, str):
+                                        print(
+                                            "\n".join(
+                                                "      " + line for line in v.split("\n")
+                                            )
                                         )
-                                    )
-                                else:
-                                    print(f"      {v}")
-                        else:
-                            print(f"   {thoughts}")
+                                    else:
+                                        print(f"      {v}")
+                            else:
+                                print(f"   {thoughts}")
 
-                        print("-" * 80)  # Separator between options
-                except (ValueError, IndexError) as e:
-                    pass
+                            print("-" * 80)  # Separator between options
+                    except (ValueError, IndexError) as e:
+                        pass
 
             # Print the prediction
             print("\n" + "=" * 80)
