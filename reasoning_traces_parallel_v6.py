@@ -2235,21 +2235,28 @@ def print_readable_output(
                     
                     new_answer = argonium_pred.get("predicted_answer", "Unknown")
                     new_extraction_successful = argonium_pred.get("extraction_successful", False)
+                    new_correct = argonium_pred.get("prediction_correct", False)
                     
                     print(f"   File prediction: {file_answer[:100]}{'...' if len(file_answer) > 100 else ''}")
-                    print(f"   File score: {file_score} ({'✓ Correct' if file_correct else '✗ Incorrect'})")
+                    print(f"   File result: {file_score} ({'✓ Correct' if file_correct else '✗ Incorrect'})")
                     print(f"   New prediction: {new_answer}")
-                    print(f"   New extraction: {'✓ Successful' if new_extraction_successful else '✗ Failed'}")
+                    print(f"   New result: {'✓ Correct' if new_correct else '✗ Incorrect'} ({'✓ Extracted' if new_extraction_successful else '✗ Failed to extract'})")
                     
-                    # Detailed comparison
-                    if file_correct and new_extraction_successful:
-                        print("   📊 Comparison: Both methods succeeded")
-                    elif file_correct and not new_extraction_successful:
-                        print("   ⚠️  Comparison: File method succeeded, new method failed")
-                    elif not file_correct and new_extraction_successful:
-                        print("   📈 Comparison: File method failed, new method succeeded") 
+                    # Clear comparison based on actual outcomes
+                    if file_correct and new_correct:
+                        print("   🎯 Both methods got the correct answer")
+                    elif file_correct and not new_correct:
+                        if new_extraction_successful:
+                            print("   📉 File method correct, new method chose wrong answer")
+                        else:
+                            print("   ⚠️  File method correct, new method failed to extract answer")
+                    elif not file_correct and new_correct:
+                        print("   📈 File method wrong, new method got correct answer")
                     else:
-                        print("   ❌ Comparison: Both methods failed")
+                        if new_extraction_successful:
+                            print("   ❌ Both methods chose wrong answers")
+                        else:
+                            print("   💥 File method wrong, new method failed to extract")
                         
                     # Answer content comparison
                     file_choice = argonium_file_result.get("evaluation", {}).get("model_choice", "")
