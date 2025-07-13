@@ -68,6 +68,12 @@ def parse_arguments():
         help='Specialty persona to adopt (e.g., "microbiologist", "quantum physicist", "historian") (default: expert)',
     )
     parser.add_argument(
+        "--reasoning-mode",
+        choices=["detailed", "focused", "efficient"],
+        default="detailed",
+        help="Reasoning approach: detailed (thorough analysis - current method), focused (structured reasoning with early elimination), efficient (streamlined for accuracy testing) (default: detailed)",
+    )
+    parser.add_argument(
         "--save-interval",
         type=int,
         default=10,
@@ -596,6 +602,250 @@ def check_content_consistency(model_answer, correct_option_content):
     return option_clean in model_clean
 
 
+def generate_reasoning_prompt(
+    specialty: str, persona: str, question_text: str, options: List[str], reasoning_mode: str
+) -> str:
+    """
+    Generate reasoning prompt based on the selected reasoning mode.
+    
+    Args:
+        specialty: Expert specialty
+        persona: Expert persona description
+        question_text: The question text
+        options: List of answer options
+        reasoning_mode: "detailed", "focused", or "efficient"
+    
+    Returns:
+        Complete prompt string
+    """
+    # Check if scientific field
+    is_scientific = any(
+        field in specialty.lower()
+        for field in [
+            "scientist", "biologist", "physicist", "chemist", "geologist",
+            "astronomer", "mathematician", "engineer",
+        ]
+    )
+    
+    # Split the question text to get just the question part (without options)
+    question_parts = question_text.split("\n\n", 1)
+    question_only = question_parts[0] if len(question_parts) > 0 else question_text
+    
+    # Base prompt structure
+    base_prompt = f"""You are a {specialty} reasoning through a multiple-choice question. Your persona: {persona}
+
+QUESTION:
+{question_only}
+
+ANSWER OPTIONS:
+"""
+    
+    # Add options
+    for i, option in enumerate(options):
+        base_prompt += f"{i+1}. {option}\n"
+    
+    # Add reasoning instructions based on mode
+    if reasoning_mode == "detailed":
+        return base_prompt + generate_overthink_instructions(specialty, is_scientific)
+    elif reasoning_mode == "focused":
+        return base_prompt + generate_balanced_instructions(specialty, is_scientific)
+    elif reasoning_mode == "efficient":
+        return base_prompt + generate_minimal_instructions(specialty, is_scientific)
+    else:
+        # Default to detailed
+        return base_prompt + generate_overthink_instructions(specialty, is_scientific)
+
+
+def generate_overthink_instructions(specialty: str, is_scientific: bool) -> str:
+    """Generate detailed overthinking instructions (current method)."""
+    if is_scientific:
+        return f"""
+TASK:
+Please provide an extremely detailed internal monologue as if you are a {specialty} thinking through this problem. For each answer option:
+1. Treat each option as a hypothesis that you're carefully considering
+2. Use specialized terminology and concepts from your field in your reasoning
+3. Consider relevant mechanisms, processes, theoretical frameworks, and evidence
+4. Reason through the implications and logical consequences of each option
+5. Reference relevant principles, theories, or frameworks from your field
+6. Consider edge cases, exceptions, and nuances for each option
+7. Express uncertainty and weigh evidence where appropriate
+
+Structure your response as an expert's stream of consciousness:
+- Analyze each option thoroughly in sequential order (Option 1, then Option 2, etc.)
+- For each option, begin with "Hmm, let me consider option X..."
+- After analyzing ALL options, explicitly predict which answer you think is correct using its NUMBER (e.g., "I predict option 3 is correct")
+- Then explain your reasoning for your prediction - what principles and evidence led you to this conclusion?
+- Finally, indicate your confidence level in your prediction (high, medium, or low) and explain why
+
+Output your reasoning in JSON format with the following structure:
+{{
+  "thought_process": {{
+    "option_1": "Detailed reasoning about option 1 as a hypothesis",
+    "option_2": "Detailed reasoning about option 2 as a hypothesis",
+    ... (all options in numerical order)
+  }},
+  "prediction": {{
+    "predicted_answer": "The option number you predict is correct (e.g., 3)",
+    "prediction_reasoning": "Reasoning for why you predict this answer is correct",
+    "confidence_level": "Your confidence level (high, medium, or low)",
+    "confidence_explanation": "Why you have this level of confidence in your prediction"
+  }},
+  "scientific_conclusion": "Final synthesized assessment"
+}}
+
+IMPORTANT: Your response must be a valid, parseable JSON object. For each option, include detailed reasoning of at least 150-200 words. You MUST make a prediction and specify ONLY the option number (e.g., '3', NOT 'Option 3').
+"""
+    else:
+        return f"""
+TASK:
+Please provide an extremely detailed internal monologue as if you are a {specialty} thinking through this problem. For each answer option:
+1. Treat each option as a possibility that you're carefully considering
+2. Use specialized terminology and concepts from your field in your reasoning
+3. Consider relevant frameworks, methodologies, contexts, and evidence
+4. Reason through the implications and logical consequences of each option
+5. Reference relevant principles, theories, or frameworks from your domain of expertise
+6. Consider alternative interpretations, exceptions, and nuances for each option
+7. Express uncertainty and weigh evidence where appropriate
+
+Structure your response as an expert's stream of consciousness:
+- Analyze each option thoroughly in sequential order (Option 1, then Option 2, etc.)
+- For each option, begin with "Hmm, let me consider option X..."
+- After analyzing ALL options, explicitly predict which answer you think is correct using its NUMBER (e.g., "I predict option 3 is correct")
+- Then explain your reasoning for your prediction - what principles and evidence led you to this conclusion?
+- Finally, indicate your confidence level in your prediction (high, medium, or low) and explain why
+
+Output your reasoning in JSON format with the following structure:
+{{
+  "thought_process": {{
+    "option_1": "Detailed reasoning about option 1",
+    "option_2": "Detailed reasoning about option 2",
+    ... (all options in numerical order)
+  }},
+  "prediction": {{
+    "predicted_answer": "The option number you predict is correct (e.g., 3)",
+    "prediction_reasoning": "Reasoning for why you predict this answer is correct",
+    "confidence_level": "Your confidence level (high, medium, or low)",
+    "confidence_explanation": "Why you have this level of confidence in your prediction"
+  }},
+  "conclusion": "Final synthesized assessment"
+}}
+
+IMPORTANT: Your response must be a valid, parseable JSON object. For each option, include detailed reasoning of at least 150-200 words. You MUST make a prediction and specify ONLY the option number (e.g., '3', NOT 'Option 3').
+"""
+
+
+def generate_balanced_instructions(specialty: str, is_scientific: bool) -> str:
+    """Generate focused reasoning instructions (focused but thorough)."""
+    if is_scientific:
+        return f"""
+TASK:
+As a {specialty}, analyze this question efficiently but thoroughly. Focus on the key scientific principles that differentiate the options:
+
+1. Identify the core scientific concept being tested
+2. Quickly eliminate obviously incorrect options with brief reasoning
+3. Focus detailed analysis on the most plausible 2-3 options
+4. Use your scientific knowledge to identify the decisive factors
+5. Make a confident prediction based on the strongest evidence
+
+Structure your response efficiently:
+- Briefly explain the key scientific principle at stake
+- Quickly dismiss clearly wrong options (1-2 sentences each)
+- Provide focused analysis of viable options (3-4 sentences each)
+- Make your prediction with clear scientific reasoning
+- State your confidence level
+
+Output in JSON format:
+{{
+  "key_principle": "The main scientific concept being tested",
+  "quick_elimination": {{
+    "dismissed_options": ["List of obviously wrong option numbers"],
+    "reasoning": "Brief explanation why these are clearly incorrect"
+  }},
+  "focused_analysis": {{
+    "viable_options": ["List of plausible option numbers"],
+    "detailed_reasoning": "Focused analysis of the key differentiating factors"
+  }},
+  "prediction": {{
+    "predicted_answer": "The option number (e.g., 3)",
+    "prediction_reasoning": "Clear scientific reasoning for your choice",
+    "confidence_level": "high/medium/low",
+    "confidence_explanation": "Why you have this confidence level"
+  }},
+  "scientific_conclusion": "Final assessment"
+}}
+
+IMPORTANT: Be efficient - don't overthink. Focus on the key distinguishing factors. Predict the option number only (e.g., '3').
+"""
+    else:
+        return f"""
+TASK:
+As a {specialty}, analyze this question efficiently but thoroughly. Focus on the key factors that differentiate the options:
+
+1. Identify the core concept or principle being tested
+2. Quickly eliminate obviously incorrect options with brief reasoning
+3. Focus detailed analysis on the most plausible 2-3 options
+4. Use your expertise to identify the decisive factors
+5. Make a confident prediction based on the strongest evidence
+
+Structure your response efficiently:
+- Briefly explain the key principle at stake
+- Quickly dismiss clearly wrong options (1-2 sentences each)
+- Provide focused analysis of viable options (3-4 sentences each)
+- Make your prediction with clear reasoning
+- State your confidence level
+
+Output in JSON format:
+{{
+  "key_principle": "The main concept being tested",
+  "quick_elimination": {{
+    "dismissed_options": ["List of obviously wrong option numbers"],
+    "reasoning": "Brief explanation why these are clearly incorrect"
+  }},
+  "focused_analysis": {{
+    "viable_options": ["List of plausible option numbers"],
+    "detailed_reasoning": "Focused analysis of the key differentiating factors"
+  }},
+  "prediction": {{
+    "predicted_answer": "The option number (e.g., 3)",
+    "prediction_reasoning": "Clear reasoning for your choice",
+    "confidence_level": "high/medium/low",
+    "confidence_explanation": "Why you have this confidence level"
+  }},
+  "conclusion": "Final assessment"
+}}
+
+IMPORTANT: Be efficient - don't overthink. Focus on the key distinguishing factors. Predict the option number only (e.g., '3').
+"""
+
+
+def generate_minimal_instructions(specialty: str, is_scientific: bool) -> str:
+    """Generate efficient reasoning instructions (streamlined approach)."""
+    return f"""
+TASK:
+As a {specialty}, answer this question directly and efficiently:
+
+1. Identify what the question is really asking
+2. Apply your core knowledge to eliminate wrong answers
+3. Select the best answer with concise reasoning
+4. State your confidence
+
+Be direct and focused - trust your expertise.
+
+Output in JSON format:
+{{
+  "quick_analysis": "Brief explanation of what the question tests",
+  "elimination": "Quick reasoning for dismissing wrong options",
+  "prediction": {{
+    "predicted_answer": "The option number (e.g., 3)",
+    "prediction_reasoning": "Concise reasoning for your choice (2-3 sentences)",
+    "confidence_level": "high/medium/low"
+  }}
+}}
+
+IMPORTANT: Be concise and direct. Trust your instincts. Predict the option number only (e.g., '3').
+"""
+
+
 def generate_argonium_style_prediction(
     full_question_text: str, options: List[str], client: OpenAI, model_name: str, specialty: str
 ) -> Dict[str, Any]:
@@ -1039,6 +1289,7 @@ def generate_reasoning_trace(
     grading_client: OpenAI = None,
     grading_model_name: str = None,
     verbose_grading: bool = False,
+    reasoning_mode: str = "detailed",
 ) -> Dict[str, Any]:
     """
     Generate a reasoning trace for a multiple choice question.
@@ -1111,20 +1362,9 @@ def generate_reasoning_trace(
     # Get the expert persona
     persona = get_expert_persona(specialty)
 
-    # Construct the prompt for generating the reasoning trace - without relying on context
-    # Adapt wording based on whether this is a scientific field
-    is_scientific = any(
-        field in specialty.lower()
-        for field in [
-            "scientist",
-            "biologist",
-            "physicist",
-            "chemist",
-            "geologist",
-            "astronomer",
-            "mathematician",
-            "engineer",
-        ]
+    # Generate prompt based on reasoning mode
+    prompt = generate_reasoning_prompt(
+        specialty, persona, question_text, options, reasoning_mode
     )
 
     if is_scientific:
@@ -1292,13 +1532,30 @@ Structure your response as an expert's stream of consciousness:
                     # Extract scientific conclusion
                     conclusion = extract_conclusion_from_text(response_text)
 
-                    # Create structured JSON
-                    json_content = {
-                        "thought_process": thought_process,
-                        "prediction": prediction,
-                        "scientific_conclusion": conclusion,
-                        "extracted_from_text": True,
-                    }
+                    # Create structured JSON based on reasoning mode
+                    if reasoning_mode == "efficient":
+                        json_content = {
+                            "quick_analysis": "",
+                            "elimination": "",
+                            "prediction": prediction,
+                            "extracted_from_text": True,
+                        }
+                    elif reasoning_mode == "focused":
+                        json_content = {
+                            "key_principle": "",
+                            "quick_elimination": {"dismissed_options": [], "reasoning": ""},
+                            "focused_analysis": {"viable_options": [], "detailed_reasoning": ""},
+                            "prediction": prediction,
+                            "scientific_conclusion": conclusion,
+                            "extracted_from_text": True,
+                        }
+                    else:  # detailed mode
+                        json_content = {
+                            "thought_process": thought_process,
+                            "prediction": prediction,
+                            "scientific_conclusion": conclusion,
+                            "extracted_from_text": True,
+                        }
             else:
                 # No code block found, extract structured data directly from raw text
                 log_message(
@@ -1366,13 +1623,30 @@ Structure your response as an expert's stream of consciousness:
                         # Extract scientific conclusion
                         conclusion = extract_conclusion_from_text(cleaned_text)
 
-                        # Create structured JSON
-                        json_content = {
-                            "thought_process": thought_process,
-                            "prediction": prediction,
-                            "scientific_conclusion": conclusion,
-                            "extracted_from_text": True,
-                        }
+                        # Create structured JSON based on reasoning mode
+                        if reasoning_mode == "minimal":
+                            json_content = {
+                                "quick_analysis": "",
+                                "elimination": "",
+                                "prediction": prediction,
+                                "extracted_from_text": True,
+                            }
+                        elif reasoning_mode == "focused":
+                            json_content = {
+                                "key_principle": "",
+                                "quick_elimination": {"dismissed_options": [], "reasoning": ""},
+                                "focused_analysis": {"viable_options": [], "detailed_reasoning": ""},
+                                "prediction": prediction,
+                                "scientific_conclusion": conclusion,
+                                "extracted_from_text": True,
+                            }
+                        else:  # detailed/overthink mode
+                            json_content = {
+                                "thought_process": thought_process,
+                                "prediction": prediction,
+                                "scientific_conclusion": conclusion,
+                                "extracted_from_text": True,
+                            }
                 else:
                     # No embedded JSON, do full extraction
                     # Extract thought process for each option
@@ -1386,13 +1660,30 @@ Structure your response as an expert's stream of consciousness:
                     # Extract scientific conclusion
                     conclusion = extract_conclusion_from_text(cleaned_text)
 
-                    # Create structured JSON
-                    json_content = {
-                        "thought_process": thought_process,
-                        "prediction": prediction,
-                        "scientific_conclusion": conclusion,
-                        "extracted_from_text": True,
-                    }
+                    # Create structured JSON based on reasoning mode
+                    if reasoning_mode == "efficient":
+                        json_content = {
+                            "quick_analysis": "",
+                            "elimination": "",
+                            "prediction": prediction,
+                            "extracted_from_text": True,
+                        }
+                    elif reasoning_mode == "focused":
+                        json_content = {
+                            "key_principle": "",
+                            "quick_elimination": {"dismissed_options": [], "reasoning": ""},
+                            "focused_analysis": {"viable_options": [], "detailed_reasoning": ""},
+                            "prediction": prediction,
+                            "scientific_conclusion": conclusion,
+                            "extracted_from_text": True,
+                        }
+                    else:  # detailed mode
+                        json_content = {
+                            "thought_process": thought_process,
+                            "prediction": prediction,
+                            "scientific_conclusion": conclusion,
+                            "extracted_from_text": True,
+                        }
 
                 # If we couldn't extract meaningful structured data, save the raw text
                 if not thought_process and not prediction["predicted_answer"]:
@@ -2683,6 +2974,7 @@ def main():
             grading_client=grading_client,
             grading_model_name=grading_model_name,
             verbose_grading=args.verbose_grading,
+            reasoning_mode=args.reasoning_mode,
         )
         
         # Add argonium file comparison if available
