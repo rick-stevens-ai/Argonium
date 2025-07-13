@@ -597,14 +597,15 @@ def check_content_consistency(model_answer, correct_option_content):
 
 
 def generate_argonium_style_prediction(
-    question: str, options: List[str], client: OpenAI, model_name: str, specialty: str
+    full_question_text: str, options: List[str], client: OpenAI, model_name: str, specialty: str
 ) -> Dict[str, Any]:
     """
     Generate a prediction using Argonium's simplified, direct approach.
+    Uses the exact same input format as argonium_score_parallel.
 
     Args:
-        question: The question text (without options)
-        options: List of answer options
+        full_question_text: The complete question text (may include embedded options)
+        options: List of answer options (used for fallback reconstruction only)
         client: OpenAI client
         model_name: Model name to use
         specialty: Expert specialty
@@ -612,10 +613,16 @@ def generate_argonium_style_prediction(
     Returns:
         Dictionary with argonium prediction results
     """
-    # Handle question format exactly like argonium_score_parallel
-    # Check if question already has embedded options (like the HR dataset)
-    full_question = question
-    has_embedded_options = bool(re.search(r"(?:^|\n)\s*([1-9])[.):]\s", question))
+    # Use the question text exactly as provided (like argonium_score_parallel does)
+    # This ensures identical input format to argonium_score_parallel
+    full_question = full_question_text
+    
+    # Simple check for embedded options without regex - look for numbered patterns
+    has_embedded_options = any(
+        line.strip().startswith(f"{i}.") or line.strip().startswith(f"{i})")
+        for line in full_question_text.split('\n')
+        for i in range(1, 10)
+    )
     
     if not has_embedded_options and options:
         # Only reconstruct if options are separate (like make_v21 format)
@@ -1446,15 +1453,12 @@ Structure your response as an expert's stream of consciousness:
                 log_level="INFO",
             )
 
-            # Get just the question part without options for Argonium-style prompt
-            question_parts = question_text.split("\n\n", 1)
-            question_only = (
-                question_parts[0] if len(question_parts) > 0 else question_text
-            )
-
-            # Generate Argonium-style prediction
+            # Use the FULL question text like argonium_score_parallel does (not just question_only)
+            # This ensures identical input format to argonium_score_parallel
+            
+            # Generate Argonium-style prediction with full question text
             argonium_prediction = generate_argonium_style_prediction(
-                question_only, options, client, model_name, specialty
+                question_text, options, client, model_name, specialty
             )
 
             # Grade the argonium-style prediction using the same grader as argonium_score_parallel
@@ -1493,7 +1497,7 @@ Structure your response as an expert's stream of consciousness:
             comparison_analysis = generate_prediction_comparison(
                 reasoning_data,
                 argonium_prediction,
-                question_only,
+                question_text,
                 options,
                 client,
                 model_name,
