@@ -1597,7 +1597,7 @@ Structure your response as an expert's stream of consciousness:
                     argonium_prediction["grading_result"] = argonium_grading_result
                     argonium_prediction["prediction_correct"] = argonium_grading_result.get("is_correct", False)
                     argonium_prediction["predicted_answer"] = argonium_grading_result.get("extracted_option_number", "Could not determine")
-                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("is_correct", False)
+                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("grading_successful", False)
                     
                     # Extract predicted option number if available
                     if argonium_grading_result.get("extracted_option_number", "unknown") != "unknown":
