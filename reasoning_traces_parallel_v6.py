@@ -765,16 +765,26 @@ def generate_argonium_style_prediction(
     )
 
     try:
-        # Create the completion request with low temperature for consistency
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
+        # Check if we need to skip temperature (for reasoning models like o3 and o4mini) - same as argonium
+        skip_temperature = any(
+            name in model_name.lower() for name in ["o3", "o4-mini", "o4mini"]
+        )
+
+        # Prepare parameters like argonium does
+        params = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message},
             ],
-            temperature=0.0,  # Low temperature for consistent results (like Argonium)
-            max_tokens=500,
-        )
+            "max_tokens": 500,
+        }
+
+        # Add temperature only for models that support it
+        if not skip_temperature:
+            params["temperature"] = 0.0
+
+        response = client.chat.completions.create(**params)
 
         response_text = response.choices[0].message.content.strip()
 
