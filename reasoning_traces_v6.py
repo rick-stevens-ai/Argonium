@@ -274,7 +274,7 @@ I'm well-versed in the foundational principles, current developments, and ongoin
 
 def extract_mc_options(question_text: str) -> List[str]:
     """
-    Extract multiple choice options from the question text.
+    Extract multiple choice options from the question text without regex.
 
     Args:
         question_text: The full multiple choice question text
@@ -289,20 +289,37 @@ def extract_mc_options(question_text: str) -> List[str]:
         return []
 
     options_text = parts[1]
+    options = []
+    
+    # Process line by line looking for option patterns
+    lines = options_text.split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Check if line starts with option pattern (basic patterns only)
+        # Look for "1) ", "2) ", "A) ", "B) ", "1. ", "2. ", "A. ", "B. ", etc.
+        if len(line) >= 3:
+            first_char = line[0]
+            second_char = line[1]
+            
+            # Check for numbered options
+            if first_char.isdigit() and second_char in [')', '.'] and len(line) > 2 and line[2] == ' ':
+                option_text = line[3:].strip()
+                # Remove asterisks marking correct answers
+                if option_text.endswith('(*)'):
+                    option_text = option_text[:-3].strip()
+                options.append(option_text)
+            # Check for lettered options
+            elif first_char.isalpha() and second_char in [')', '.'] and len(line) > 2 and line[2] == ' ':
+                option_text = line[3:].strip()
+                # Remove asterisks marking correct answers
+                if option_text.endswith('(*)'):
+                    option_text = option_text[:-3].strip()
+                options.append(option_text)
 
-    # Match different option formats like "1.", "1)", "A.", "A)", etc.
-    options = re.findall(
-        r"(?:^|\n)(?:\d+|\w)[.)] (.*?)(?=(?:\n(?:\d+|\w)[.)])|$)",
-        options_text,
-        re.DOTALL,
-    )
-
-    # Clean up the options (remove asterisks marking correct answers, etc.)
-    cleaned_options = [
-        re.sub(r"\s*\(\*\)\s*$", "", option.strip()) for option in options
-    ]
-
-    return cleaned_options
+    return options
 
 
 def extract_thought_process_from_text(text: str, option_count: int) -> Dict[str, str]:
@@ -536,142 +553,13 @@ def detect_choice_identifier_type(question_text):
         return "letter"
 
 
-def extract_choice_identifier(answer_text):
-    """
-    Extract the choice identifier (A, B, C, D, E, etc. or 1, 2, 3, 4, 5, etc.) from an answer text.
-    Uses multiple regex patterns to handle different formats.
-    Copied from argonium_score_parallel_v9.py for exact compatibility.
-
-    Returns a tuple of (identifier_type, identifier) where identifier_type is either 'letter' or 'number'
-    and identifier is the letter (A-Z) or number (1-9) that was identified.
-    """
-    # First, check if this is a multiple-choice format text
-    if not answer_text:
-        return (None, None)
-
-    # More strict patterns for multiple choice options (look for standard patterns)
-    # This looks for options clearly marked, like "A)" or "A." at beginning of lines or text
-    letter_mc_pattern = r"(?:^|\n)\s*([A-E])[.):]\s"
-    number_mc_pattern = r"(?:^|\n)\s*([1-5])[.):]\s"
-
-    # Also look for explicit mentions of options
-    letter_explicit = r"(?:option|answer|choice)\s+([A-E])\b"
-    number_explicit = r"(?:option|answer|choice)\s+([1-5])\b"
-
-    # Look for standard statements about correct answers
-    letter_statement = r"(?:the\s+(?:correct\s+)?answer\s+is\s+([A-E]))|(?:\b([A-E])\s+is\s+(?:the\s+)?correct)"
-    number_statement = r"(?:the\s+(?:correct\s+)?answer\s+is\s+([1-5]))|(?:\b([1-5])\s+is\s+(?:the\s+)?correct)"
-
-    # Try the strict patterns first
-    for pattern in [letter_mc_pattern, letter_explicit, letter_statement]:
-        match = re.search(pattern, answer_text, re.IGNORECASE)
-        if match:
-            for group in match.groups():
-                if group:
-                    return ("letter", group.upper())
-
-    for pattern in [number_mc_pattern, number_explicit, number_statement]:
-        match = re.search(pattern, answer_text, re.IGNORECASE)
-        if match:
-            for group in match.groups():
-                if group:
-                    return ("number", group)
-
-    # If strict patterns don't match, look at the beginning of the response
-    # This pattern searches for an answer that starts with a letter/number indicator
-    first_line = answer_text.split("\n")[0].strip()
-
-    # Look for responses that begin with "A:", "A.", "A)", or just "A"
-    letter_start = re.match(r"^([A-E])(?:[.):,]|\s|$)", first_line, re.IGNORECASE)
-    if letter_start:
-        return ("letter", letter_start.group(1).upper())
-
-    # Look for responses that begin with "1:", "1.", "1)", or just "1"
-    number_start = re.match(r"^([1-5])(?:[.):,]|\s|$)", first_line, re.IGNORECASE)
-    if number_start:
-        return ("number", number_start.group(1))
-
-    # For short answers, scan for a valid option letter (A-E) or number (1-5)
-    if len(answer_text) < 100:  # Only for short answers to avoid false matches
-        # Look for any standalone A, B, C, D, E in the text
-        standalone_letter = re.search(r"\b([A-E])\b", answer_text, re.IGNORECASE)
-        if standalone_letter:
-            return ("letter", standalone_letter.group(1).upper())
-
-        # Look for any standalone 1, 2, 3, 4, 5 in the text
-        standalone_number = re.search(r"\b([1-5])\b", answer_text)
-        if standalone_number:
-            return ("number", standalone_number.group(1))
-
-    # If no pattern matches, return None for both
-    return (None, None)
+# Choice identifier extraction removed - all evaluation done by grader model
 
 
-def normalize_choice_identifier(identifier, identifier_type, target_type):
-    """
-    Normalize a choice identifier to the target type.
-    Copied from argonium_score_parallel_v9.py for exact compatibility.
-
-    Args:
-        identifier (str): The identifier (A, B, C... or 1, 2, 3...)
-        identifier_type (str): 'letter' or 'number'
-        target_type (str): 'letter' or 'number'
-
-    Returns:
-        str: The normalized identifier, or None if conversion fails
-    """
-    if not identifier or not identifier_type or not target_type:
-        return None
-
-    if identifier_type == target_type:
-        return identifier
-
-    try:
-        if identifier_type == "letter" and target_type == "number":
-            # Convert A->1, B->2, etc.
-            return str(ord(identifier.upper()) - 64)
-        elif identifier_type == "number" and target_type == "letter":
-            # Convert 1->A, 2->B, etc.
-            num = int(identifier)
-            if 1 <= num <= 26:
-                return chr(64 + num)
-    except (ValueError, TypeError):
-        pass
-
-    return None
+# Choice identifier normalization removed - all evaluation done by grader model
 
 
-def extract_option_content(question, choice_identifier, identifier_type):
-    """
-    Extract the content of a specific option from a multiple-choice question.
-    Copied from argonium_score_parallel_v9.py for exact compatibility.
-
-    Args:
-        question (str): The full question text
-        choice_identifier (str): The choice identifier (A, B, 1, 2, etc.)
-        identifier_type (str): 'letter' or 'number'
-
-    Returns:
-        str: The content of the option, or None if not found
-    """
-    if not question or not choice_identifier:
-        return None
-
-    # Escape the identifier for regex
-    escaped_id = re.escape(choice_identifier)
-
-    # Pattern to match the option and capture its content
-    # Looks for the identifier followed by punctuation, then captures until next option or end
-    pattern = r"(?:^|\n)\s*" + escaped_id + r"[.):,]\s+(.+?)(?=\n\s*[A-E1-5][.):,]|$)"
-
-    match = re.search(pattern, question, re.DOTALL | re.IGNORECASE)
-    if match:
-        content = match.group(1).strip()
-        # Clean up the content (remove extra whitespace, newlines)
-        content = re.sub(r"\s+", " ", content)
-        return content
-
-    return None
+# Option content extraction removed - all evaluation done by grader model
 
 
 def check_content_consistency(model_answer, correct_option_content):
@@ -789,50 +677,11 @@ def generate_argonium_style_prediction(
 
         response_text = response.choices[0].message.content.strip()
 
-        # Use exact argonium response processing logic
-        # Extract choice identifier using the same function as argonium_score_parallel
-        model_id_type, model_id = extract_choice_identifier(response_text)
-        
-        # Detect the question's identifier type to determine target format
-        question_id_type = detect_choice_identifier_type(full_question)
-        
-        predicted_answer = "Could not determine"
-        predicted_num = None
-        extracted_choice = None
-        
-        if model_id and model_id_type:
-            # Normalize to the question's format (like argonium does)
-            normalized_id = normalize_choice_identifier(model_id, model_id_type, question_id_type)
-            
-            if normalized_id:
-                extracted_choice = normalized_id
-                
-                # Convert to number for consistency (1-based indexing)
-                if question_id_type == "number":
-                    try:
-                        predicted_num = int(normalized_id)
-                        predicted_answer = normalized_id
-                    except ValueError:
-                        pass
-                else:  # letter format
-                    try:
-                        predicted_num = ord(normalized_id.upper()) - ord("A") + 1
-                        predicted_answer = normalized_id.upper()
-                    except (ValueError, TypeError):
-                        pass
-
-        # Additional validation like argonium does
-        extraction_successful = predicted_num is not None and 1 <= predicted_num <= len(options)
-        
+        # No regex processing - let grader model handle all evaluation
+        # Return raw response for grader model to evaluate
         return {
-            "predicted_answer": predicted_answer,
-            "predicted_num": predicted_num,
-            "extracted_choice": extracted_choice,
-            "model_id_type": model_id_type,
-            "model_id": model_id,
-            "question_id_type": question_id_type,
             "raw_response": response_text,
-            "extraction_successful": extraction_successful,
+            "model_answer": response_text,  # For compatibility with argonium grader
         }
 
     except Exception as e:
@@ -840,10 +689,8 @@ def generate_argonium_style_prediction(
             f"Error generating Argonium-style prediction: {e}", log_level="ERROR"
         )
         return {
-            "predicted_answer": "Error occurred",
-            "predicted_num": None,
             "raw_response": f"Error: {str(e)}",
-            "extraction_successful": False,
+            "model_answer": f"Error: {str(e)}",
         }
 
 
@@ -1609,6 +1456,38 @@ Structure your response as an expert's stream of consciousness:
             argonium_prediction = generate_argonium_style_prediction(
                 question_only, options, client, model_name, specialty
             )
+
+            # Grade the argonium-style prediction using the same grader as argonium_score_parallel
+            if grading_client is not None and grading_model_name is not None:
+                correct_answer = options[correct_option_index] if correct_option_index < len(options) else ""
+                argonium_model_answer = argonium_prediction.get("model_answer", "")
+                
+                if argonium_model_answer and correct_answer:
+                    # Use the same evaluate_answer function as argonium_score_parallel
+                    grader_config = {
+                        "api_key": grading_client.api_key,
+                        "api_base": grading_client.base_url,
+                        "model_name": grading_model_name,
+                    }
+                    
+                    argonium_grading_result = evaluate_answer(
+                        question_text, correct_answer, argonium_model_answer, grader_config, question_format="mc"
+                    )
+                    
+                    # Add grading results to argonium prediction
+                    argonium_prediction["grading_result"] = argonium_grading_result
+                    argonium_prediction["prediction_correct"] = argonium_grading_result.get("match", False)
+                    argonium_prediction["predicted_answer"] = argonium_grading_result.get("model_choice", "Could not determine")
+                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("match", False)
+                    
+                    # Extract predicted option number if available
+                    if argonium_grading_result.get("model_choice", "unknown") != "unknown":
+                        try:
+                            argonium_prediction["predicted_num"] = int(argonium_grading_result["model_choice"])
+                        except (ValueError, TypeError):
+                            argonium_prediction["predicted_num"] = None
+                    else:
+                        argonium_prediction["predicted_num"] = None
 
             # Generate comparison analysis
             comparison_analysis = generate_prediction_comparison(

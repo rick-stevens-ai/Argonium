@@ -557,16 +557,17 @@ def extract_choice_identifier(answer_text):
 
     # More strict patterns for multiple choice options (look for standard patterns)
     # This looks for options clearly marked, like "A)" or "A." at beginning of lines or text
-    letter_mc_pattern = r"(?:^|\n)\s*([A-E])[.):]\s"
-    number_mc_pattern = r"(?:^|\n)\s*([1-5])[.):]\s"
+    # Extended to handle more options (up to 9 for numbers, up to J for letters)
+    letter_mc_pattern = r"(?:^|\n)\s*([A-J])[.):]\s"
+    number_mc_pattern = r"(?:^|\n)\s*([1-9])[.):]\s"
 
     # Also look for explicit mentions of options
-    letter_explicit = r"(?:option|answer|choice)\s+([A-E])\b"
-    number_explicit = r"(?:option|answer|choice)\s+([1-5])\b"
+    letter_explicit = r"(?:option|answer|choice)\s+([A-J])\b"
+    number_explicit = r"(?:option|answer|choice)\s+([1-9])\b"
 
     # Look for standard statements about correct answers
-    letter_statement = r"(?:the\s+(?:correct\s+)?answer\s+is\s+([A-E]))|(?:\b([A-E])\s+is\s+(?:the\s+)?correct)"
-    number_statement = r"(?:the\s+(?:correct\s+)?answer\s+is\s+([1-5]))|(?:\b([1-5])\s+is\s+(?:the\s+)?correct)"
+    letter_statement = r"(?:the\s+(?:correct\s+)?answer\s+is\s+([A-J]))|(?:\b([A-J])\s+is\s+(?:the\s+)?correct)"
+    number_statement = r"(?:the\s+(?:correct\s+)?answer\s+is\s+([1-9]))|(?:\b([1-9])\s+is\s+(?:the\s+)?correct)"
 
     # Try the strict patterns first
     for pattern in [letter_mc_pattern, letter_explicit, letter_statement]:
@@ -588,24 +589,24 @@ def extract_choice_identifier(answer_text):
     first_line = answer_text.split("\n")[0].strip()
 
     # Look for responses that begin with "A:", "A.", "A)", or just "A"
-    letter_start = re.match(r"^([A-E])(?:[.):,]|\s|$)", first_line, re.IGNORECASE)
+    letter_start = re.match(r"^([A-J])(?:[.):,]|\s|$)", first_line, re.IGNORECASE)
     if letter_start:
         return ("letter", letter_start.group(1).upper())
 
     # Look for responses that begin with "1:", "1.", "1)", or just "1"
-    number_start = re.match(r"^([1-5])(?:[.):,]|\s|$)", first_line, re.IGNORECASE)
+    number_start = re.match(r"^([1-9])(?:[.):,]|\s|$)", first_line, re.IGNORECASE)
     if number_start:
         return ("number", number_start.group(1))
 
-    # For short answers, scan for a valid option letter (A-E) or number (1-5)
+    # For short answers, scan for a valid option letter (A-J) or number (1-9)
     if len(answer_text) < 100:  # Only for short answers to avoid false matches
-        # Look for any standalone A, B, C, D, E in the text
-        standalone_letter = re.search(r"\b([A-E])\b", answer_text, re.IGNORECASE)
+        # Look for any standalone A, B, C, D, E, F, G, H, I, J in the text
+        standalone_letter = re.search(r"\b([A-J])\b", answer_text, re.IGNORECASE)
         if standalone_letter:
             return ("letter", standalone_letter.group(1).upper())
 
-        # Look for any standalone 1, 2, 3, 4, 5 in the text
-        standalone_number = re.search(r"\b([1-5])\b", answer_text)
+        # Look for any standalone 1, 2, 3, 4, 5, 6, 7, 8, 9 in the text
+        standalone_number = re.search(r"\b([1-9])\b", answer_text)
         if standalone_number:
             return ("number", standalone_number.group(1))
 
@@ -795,50 +796,11 @@ def generate_argonium_style_prediction(
 
         response_text = response.choices[0].message.content.strip()
 
-        # Use exact argonium response processing logic
-        # Extract choice identifier using the same function as argonium_score_parallel
-        model_id_type, model_id = extract_choice_identifier(response_text)
-        
-        # Detect the question's identifier type to determine target format
-        question_id_type = detect_choice_identifier_type(full_question)
-        
-        predicted_answer = "Could not determine"
-        predicted_num = None
-        extracted_choice = None
-        
-        if model_id and model_id_type:
-            # Normalize to the question's format (like argonium does)
-            normalized_id = normalize_choice_identifier(model_id, model_id_type, question_id_type)
-            
-            if normalized_id:
-                extracted_choice = normalized_id
-                
-                # Convert to number for consistency (1-based indexing)
-                if question_id_type == "number":
-                    try:
-                        predicted_num = int(normalized_id)
-                        predicted_answer = normalized_id
-                    except ValueError:
-                        pass
-                else:  # letter format
-                    try:
-                        predicted_num = ord(normalized_id.upper()) - ord("A") + 1
-                        predicted_answer = normalized_id.upper()
-                    except (ValueError, TypeError):
-                        pass
-
-        # Additional validation like argonium does
-        extraction_successful = predicted_num is not None and 1 <= predicted_num <= len(options)
-        
+        # No regex processing - let grader model handle all evaluation
+        # Return raw response for grader model to evaluate
         return {
-            "predicted_answer": predicted_answer,
-            "predicted_num": predicted_num,
-            "extracted_choice": extracted_choice,
-            "model_id_type": model_id_type,
-            "model_id": model_id,
-            "question_id_type": question_id_type,
             "raw_response": response_text,
-            "extraction_successful": extraction_successful,
+            "model_answer": response_text,  # For compatibility with argonium grader
         }
 
     except Exception as e:
@@ -846,10 +808,8 @@ def generate_argonium_style_prediction(
             f"Error generating Argonium-style prediction: {e}", log_level="ERROR"
         )
         return {
-            "predicted_answer": "Error occurred",
-            "predicted_num": None,
             "raw_response": f"Error: {str(e)}",
-            "extraction_successful": False,
+            "model_answer": f"Error: {str(e)}",
         }
 
 
@@ -1615,6 +1575,38 @@ Structure your response as an expert's stream of consciousness:
             argonium_prediction = generate_argonium_style_prediction(
                 question_only, options, client, model_name, specialty
             )
+
+            # Grade the argonium-style prediction using the same grader as argonium_score_parallel
+            if grading_client is not None and grading_model_name is not None:
+                correct_answer = options[correct_option_index] if correct_option_index < len(options) else ""
+                argonium_model_answer = argonium_prediction.get("model_answer", "")
+                
+                if argonium_model_answer and correct_answer:
+                    # Use the same evaluate_answer function as argonium_score_parallel
+                    grader_config = {
+                        "api_key": grading_client.api_key,
+                        "api_base": grading_client.base_url,
+                        "model_name": grading_model_name,
+                    }
+                    
+                    argonium_grading_result = evaluate_answer(
+                        question_text, correct_answer, argonium_model_answer, grader_config, question_format="mc"
+                    )
+                    
+                    # Add grading results to argonium prediction
+                    argonium_prediction["grading_result"] = argonium_grading_result
+                    argonium_prediction["prediction_correct"] = argonium_grading_result.get("match", False)
+                    argonium_prediction["predicted_answer"] = argonium_grading_result.get("model_choice", "Could not determine")
+                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("match", False)
+                    
+                    # Extract predicted option number if available
+                    if argonium_grading_result.get("model_choice", "unknown") != "unknown":
+                        try:
+                            argonium_prediction["predicted_num"] = int(argonium_grading_result["model_choice"])
+                        except (ValueError, TypeError):
+                            argonium_prediction["predicted_num"] = None
+                    else:
+                        argonium_prediction["predicted_num"] = None
 
             # Generate comparison analysis
             comparison_analysis = generate_prediction_comparison(
