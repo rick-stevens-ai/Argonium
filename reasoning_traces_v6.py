@@ -1202,10 +1202,10 @@ def generate_reasoning_trace(
     _current_model_name = model_name
     global _processed_questions, _total_questions
 
-    # Extract question components
-    question_text = question_data["question"]
-    correct_answer = question_data["answer"]
-    context_text = question_data["text"]
+    # Extract question components with graceful defaults (match argonium_score_parallel approach)
+    question_text = question_data.get("question", "")
+    correct_answer = question_data.get("answer", "")
+    context_text = question_data.get("text", "")
 
     # Extract options from the question text
     options = extract_mc_options(question_text)
@@ -2754,12 +2754,12 @@ def main():
         log_message(f"Error reading input file: {e}", log_level="ERROR")
         sys.exit(1)
 
-    # Filter for multiple choice questions only
-    mc_questions = [q for q in questions_data if q.get("type") == "multiple-choice"]
-
+    # Process all questions like argonium_score_parallel (no filtering by type)
+    mc_questions = questions_data
+    
     if not mc_questions:
         log_message(
-            "No multiple choice questions found in the input file.", log_level="ERROR"
+            "No questions found in the input file.", log_level="ERROR"
         )
         sys.exit(1)
 
