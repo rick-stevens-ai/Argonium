@@ -1848,6 +1848,9 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
     # --------------------------------------------------------------------
     # Step 2: Generate a MULTIPLE-CHOICE question with n answers
     # --------------------------------------------------------------------
+    # Randomly select which position should be the correct answer to ensure uniform distribution
+    target_correct_position = random.randint(1, num_answers)
+    
     system_message_2 = (
         "You are a helpful assistant that generates high-quality multiple-choice questions "
         "based on text provided by the user. Each question should be challenging but fair, "
@@ -1865,7 +1868,7 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
         f"4. Make the other choices plausible but clearly incorrect.\n"
         f"5. The question should focus on a concept or fact that is clearly stated or strongly implied in the text.\n"
         f"6. Number your answer choices from 1 to {num_answers}.\n"
-        f"7. Finally, indicate which number (1-{num_answers}) is the correct answer.\n"
+        f"7. IMPORTANT: Place the correct answer in position {target_correct_position}. The correct answer must be choice number {target_correct_position}.\n"
         f"8. DO NOT provide explanations for why each answer is correct or incorrect.\n"
         f"9. CRITICAL: Both context and question must be completely self-contained. DO NOT reference any external materials including:\n"
         f"   - 'the text', 'the passage', 'the document', 'the paper', 'the study'\n"
@@ -1880,7 +1883,7 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
         f"1: <first answer choice>\n"
         f"2: <second answer choice>\n"
         f"...\n"
-        f"CORRECT ANSWER: <number of correct answer>\n"
+        f"CORRECT ANSWER: {target_correct_position}\n"
     )
 
     try:
@@ -2011,15 +2014,19 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
     # Clean the answer choices to remove any evaluation content
     answers = clean_answer_choices(raw_answers)
     
-    # Extract correct answer number
+    # Use the target correct position we specified in the prompt
+    # Verify that the AI followed our instruction by checking the response
     correct_answer_match = re.search(r"CORRECT ANSWER:\s*(\d+)", step2_output)
-    correct_answer_number = int(correct_answer_match.group(1)) if correct_answer_match else 1
+    ai_reported_answer = int(correct_answer_match.group(1)) if correct_answer_match else target_correct_position
     
-    # Find the index of the correct answer (convert from 1-based to 0-based)
-    if 1 <= correct_answer_number <= num_answers:
-        correct_index = correct_answer_number - 1
-    else:
-        correct_index = 0  # Default to first answer if something went wrong
+    # Use our target position regardless of what AI reported (for uniform distribution)
+    correct_answer_number = target_correct_position
+    correct_index = correct_answer_number - 1  # Convert from 1-based to 0-based
+    
+    # Log if AI didn't follow our instruction (for debugging purposes)
+    if ai_reported_answer != target_correct_position:
+        log_message(f"Chunk {chunk_id}: AI reported answer {ai_reported_answer} but we specified {target_correct_position}", 
+                   log_level="DEBUG")
     
     # Format the question with context and embedded choices like in NAT-MC.json
     formatted_question = ""
