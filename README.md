@@ -213,7 +213,36 @@ python reasoning_traces_v6.py questions.json \
     --specialty microbiologist
 ```
 
-### 6. Data Processing & Analysis
+### 6. Document Similarity & Clustering Analysis
+- **Primary Tool**: `similarity_analyzer.py`
+- **Purpose**: Advanced document similarity analysis with semantic embeddings and AI-powered clustering
+
+**Key Features**:
+- **Multiple Embedding Models**: Support for Sentence Transformers, OpenAI embeddings, and TF-IDF
+- **Semantic Clustering**: Automatic document clustering with t-SNE visualization
+- **AI-Powered Topic Labeling**: LLM-generated cluster labels and summaries
+- **Multi-Format Support**: Process PDF, TXT, MD, and JSON files
+- **Advanced Visualization**: Interactive t-SNE plots with spatial clustering
+- **Comprehensive Analysis**: Generate detailed technical summaries of document clusters
+
+**Example**:
+```bash
+# Basic similarity analysis with visualization
+python similarity_analyzer.py ./research_papers \
+    --model scout \
+    --embedding-model sentence-transformers:all-MiniLM-L6-v2 \
+    --spatial-clustering \
+    --output-pdf cluster_analysis.pdf
+
+# Multi-cluster analysis with OpenAI embeddings
+python similarity_analyzer.py ./documents \
+    --model gpt41 \
+    --embedding-model openai:text-embedding-ada-002 \
+    --multi-cluster 5 \
+    --generate-tsne
+```
+
+### 7. Data Processing & Analysis
 **JSON Manipulation & Reporting:**
 - `merge_json.py` - Combine multiple JSON files with advanced options
 - `merge_incorrect_answers.py` - Analyze model errors and find intersections
@@ -227,6 +256,7 @@ python reasoning_traces_v6.py questions.json \
 - `validate_pdf_quick.py` - Fast PDF validation and integrity checks
 - `paper_syn_org.py` - Organize paper synopses and metadata
 - `select_interesting_papers.py` - Filter and select relevant papers
+- `similarity_analyzer.py` - Advanced document similarity analysis and clustering
 
 **Data Cleaning & Utilities:**
 - `cleanup_mc.py` - Clean and standardize multiple choice questions
@@ -244,6 +274,7 @@ python reasoning_traces_v6.py questions.json \
 | `run_all_models.py` | Model benchmarking | Multi-model, parallel evaluation, availability checks |
 | `argonium_score_parallel_v9.py` | Advanced scoring | Parallel processing, AI grading, error analysis |
 | `reasoning_traces_v6.py` | Reasoning analysis | Expert personas, AI grading, dual prediction, meta-analysis |
+| `similarity_analyzer.py` | Document clustering | Semantic embeddings, t-SNE visualization, AI topic labeling |
 
 ### Data Processing & Utilities
 | Tool | Purpose | Key Features |
@@ -255,6 +286,7 @@ python reasoning_traces_v6.py questions.json \
 | `reprocess_results.py` | Results processing | Post-evaluation analysis and cleanup |
 | `split_pdf.py` | PDF processing | Split large documents, batch processing |
 | `validate_pdf_quick.py` | PDF validation | Fast integrity checks, corruption detection |
+| `similarity_analyzer.py` | Document similarity | Multiple embeddings, clustering, visualization |
 | `cleanup_mc.py` | Data cleaning | Multiple choice standardization |
 
 ## 📁 Project Structure
@@ -275,6 +307,7 @@ argonium/
 ├── run_all_models.py              # Multi-model benchmarking with availability checks
 ├── argonium_score_parallel_v9.py  # Advanced parallel scoring engine
 ├── reasoning_traces_v6.py         # Detailed reasoning analysis with expert personas
+├── similarity_analyzer.py         # Document similarity analysis and clustering
 ├── # Data Processing & Analysis Tools
 ├── merge_json.py                   # Advanced JSON file combination
 ├── merge_incorrect_answers.py     # Model error analysis and intersections
@@ -429,6 +462,9 @@ python validate_pdf_quick.py papers/*.pdf
 # Split large PDFs for processing
 python split_pdf.py large_paper.pdf --max-pages 20
 
+# Analyze document similarity and clustering
+python similarity_analyzer.py ./research_papers --model scout --spatial-clustering
+
 # Clean multiple choice questions
 python cleanup_mc.py messy_questions.json --output clean_questions.json
 ```
@@ -451,6 +487,12 @@ python cleanup_mc.py messy_questions.json --output clean_questions.json
 - **Meta-analysis**: Cognitive pattern assessment
 - **Sample extracts**: Notable reasoning examples
 
+### Document Similarity Analysis
+- **t-SNE visualizations**: Interactive cluster plots with topic labels
+- **Similarity matrices**: Cosine similarity between documents
+- **Cluster summaries**: AI-generated technical summaries of document groups
+- **Embedding caches**: Persistent storage for faster re-analysis
+
 ## 🚨 Common Issues & Solutions
 
 ### Installation Issues
@@ -462,6 +504,9 @@ pip install -r requirements.txt
 # For PDF processing issues:
 # macOS: brew install poppler
 # Ubuntu: sudo apt-get install poppler-utils
+
+# For similarity analysis dependencies:
+pip install sentence-transformers scikit-learn matplotlib
 ```
 
 ### API Configuration
