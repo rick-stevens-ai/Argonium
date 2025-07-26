@@ -309,7 +309,11 @@ class TerminalUI:
         self.top_pane.clear()
         
         # Draw header
-        header_text = f" AMR Question Generation Progress - Model: {self.stats['model_name']} "
+        if self.question_type and hasattr(self.question_type, 'value') and self.question_type.value == "rt":
+            generation_type = "Trace Generation"
+        else:
+            generation_type = "Question Generation"
+        header_text = f" Argonium {generation_type} Progress - Model: {self.stats['model_name']} "
         self.top_pane.addstr(0, 0, header_text.center(self.top_pane.getmaxyx()[1], "="), 
                             curses.color_pair(5) | curses.A_BOLD)
         
