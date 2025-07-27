@@ -818,6 +818,12 @@ def main():
         default=None,
         help="Maximum number of relevant papers to download per keyword. If not specified, downloads all relevant papers found.",
     )
+    parser.add_argument(
+        "--master-dir",
+        type=str,
+        default=None,
+        help="Master directory to contain all keyword subdirectories. If not specified, subdirectories are created in the current directory.",
+    )
 
     args = parser.parse_args()
 
@@ -896,6 +902,11 @@ def main():
         print("=" * 50)
 
         directory_name = sanitize_filename(keyword)
+        if args.master_dir:
+            # Create master directory if it doesn't exist
+            os.makedirs(args.master_dir, exist_ok=True)
+            # Place keyword directory inside master directory
+            directory_name = os.path.join(args.master_dir, directory_name)
         os.makedirs(directory_name, exist_ok=True)
 
         processed_papers_file = os.path.join(directory_name, "processed_papers.txt")
