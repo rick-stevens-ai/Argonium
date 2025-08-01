@@ -115,6 +115,25 @@ def parse_arguments():
         "--grading",
         help="Model to use for grading/verifying answers (defaults to same as --model if not specified)",
     )
+    
+    # Method-specific model options
+    method_group = parser.add_argument_group("Method-Specific Model Options")
+    method_group.add_argument(
+        "--method0-model",
+        help="Model to use for Method 0 (one-shot prediction) - defaults to --model if not specified",
+    )
+    method_group.add_argument(
+        "--method1-analysis-model",
+        help="Model to use for Method 1 individual option analysis - defaults to --model if not specified",
+    )
+    method_group.add_argument(
+        "--method1-synthesis-model",
+        help="Model to use for Method 1 synthesis and final reasoning - defaults to --model if not specified",
+    )
+    method_group.add_argument(
+        "--method2-model", 
+        help="Model to use for Method 2 (Argonium-style prediction) - defaults to --model if not specified",
+    )
     advanced_group.add_argument(
         "--require-grading-model",
         action="store_true",
@@ -138,6 +157,33 @@ def parse_arguments():
         type=int,
         default=1,
         help="Number of parallel workers for processing questions (default: 1)",
+    )
+    advanced_group.add_argument(
+        "--comparison-model",
+        help="Model to use for comparison analysis between different reasoning methods",
+    )
+    advanced_group.add_argument(
+        "--text-analysis-model", 
+        help="Model to use for text analysis and coherent stream generation",
+    )
+    advanced_group.add_argument(
+        "--split-output",
+        action="store_true",
+        help="Split output into individual JSON files per question",
+    )
+    advanced_group.add_argument(
+        "--split-only",
+        action="store_true", 
+        help="Only split existing output file without regenerating reasoning traces",
+    )
+    advanced_group.add_argument(
+        "--output-dir",
+        help="Directory to output split files when using --split-output or --split-only",
+    )
+    advanced_group.add_argument(
+        "--create-stream-files",
+        action="store_true",
+        help="Create individual '🌊 COHERENT STREAM OF THOUGHT ANALYSIS' files for each question in the output directory (requires --model to be specified)",
     )
 
     return parser.parse_args()
@@ -1053,11 +1099,30 @@ def generate_argonium_style_prediction(
 
         response_text = response.choices[0].message.content.strip()
 
-        # No regex processing - let grader model handle all evaluation
-        # Return raw response for grader model to evaluate
+        # Extract the predicted answer for display purposes
+        predicted_answer = "Unknown"
+        try:
+            # Try to extract the answer using the same logic as argonium scoring
+            identifier_type, identifier = extract_choice_identifier(response_text)
+            if identifier:
+                predicted_answer = identifier
+        except Exception:
+            # Fallback: look for simple patterns like "1", "2", etc. or "A", "B", etc.
+            import re
+            # Look for standalone numbers or letters at the beginning of lines or after colons
+            number_match = re.search(r'(?:^|\n|:\s*)([1-9])\b', response_text)
+            letter_match = re.search(r'(?:^|\n|:\s*)([A-J])\b', response_text, re.IGNORECASE)
+            
+            if number_match:
+                predicted_answer = number_match.group(1)
+            elif letter_match:
+                predicted_answer = letter_match.group(1).upper()
+
+        # Return response with extracted answer
         return {
             "raw_response": response_text,
             "model_answer": response_text,  # For compatibility with argonium grader
+            "predicted_answer": predicted_answer,  # For display purposes
         }
 
     except Exception as e:
@@ -1314,14 +1379,35 @@ def load_argonium_results(argonium_file: str) -> Dict[str, Any]:
         Dictionary with parsed argonium results
     """
     try:
+        if not os.path.exists(argonium_file):
+            log_message(f"ERROR: Argonium file not found: {argonium_file}", log_level="ERROR")
+            return None
+            
         with open(argonium_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        log_message(f"Loaded argonium results from {argonium_file}")
-        log_message(f"Argonium file contains {len(data.get('results', []))} questions")
-        log_message(f"Argonium overall accuracy: {data.get('metadata', {}).get('overall_accuracy', 'unknown'):.1%}")
+        log_message(f"Successfully loaded argonium results from {argonium_file}")
         
-        return data
+        # Handle both list format and dict format
+        if isinstance(data, list):
+            # Direct list of results
+            log_message(f"Argonium file contains {len(data)} questions (list format)")
+            return {"results": data, "metadata": {}}
+        elif isinstance(data, dict):
+            # Dictionary with results and metadata
+            results = data.get('results', [])
+            log_message(f"Argonium file contains {len(results)} questions (dict format)")
+            if results:
+                sample_result = results[0] if results else {}
+                log_message(f"Sample result keys: {list(sample_result.keys())}")
+            if 'metadata' in data and 'overall_accuracy' in data['metadata']:
+                accuracy = data['metadata']['overall_accuracy']
+                if isinstance(accuracy, (int, float)):
+                    log_message(f"Argonium overall accuracy: {accuracy:.1%}")
+            return data
+        else:
+            log_message(f"Unknown argonium file format: {type(data)}", log_level="ERROR")
+            return None
         
     except Exception as e:
         log_message(f"Error loading argonium results file {argonium_file}: {e}", log_level="ERROR")
@@ -1399,6 +1485,1018 @@ Respond with a JSON object:
         }
 
 
+def analyze_individual_options(
+    question_data: Dict[str, Any],
+    client: OpenAI,
+    model_name: str,
+    specialty: str = "expert"
+) -> Dict[str, Any]:
+    """
+    First stage of Method 1: Generate individual analysis for each answer option.
+    
+    Args:
+        question_data: The question data containing question and options
+        client: OpenAI client for the analysis model
+        model_name: Name of the model being used
+        specialty: The expert specialty persona
+        
+    Returns:
+        Dictionary containing individual analyses for each option
+    """
+    try:
+        question = question_data["question"]
+        options = question_data["options"]
+        
+        # Build the prompt for individual option analysis
+        options_text = "\n".join([f"{i+1}. {option}" for i, option in enumerate(options)])
+        
+        system_message = f"""You are an expert {specialty}. Your task is to analyze each possible answer option individually and thoroughly for the given question.
+
+For each option, you should:
+1. Evaluate how well it addresses the question
+2. Consider any scientific/technical accuracy 
+3. Identify strengths and potential weaknesses
+4. Note any key considerations or caveats
+
+Be thorough but concise in your analysis. Do not make a final decision - just analyze each option objectively."""
+
+        user_message = f"""Question: {question}
+
+Options:
+{options_text}
+
+Please provide a detailed analysis of each option. Structure your response as JSON with the following format:
+{{
+    "option_1": {{
+        "analysis": "Your detailed analysis of option 1",
+        "strengths": ["List of strengths"],
+        "weaknesses": ["List of weaknesses"],
+        "technical_accuracy": "Assessment of technical accuracy",
+        "relevance_to_question": "How well it addresses the question"
+    }},
+    "option_2": {{
+        "analysis": "Your detailed analysis of option 2",
+        "strengths": ["List of strengths"], 
+        "weaknesses": ["List of weaknesses"],
+        "technical_accuracy": "Assessment of technical accuracy",
+        "relevance_to_question": "How well it addresses the question"
+    }},
+    ... (continue for all options)
+}}"""
+
+        # Make the API call
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=4000
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to parse the JSON response
+        try:
+            analyses = json.loads(response_text)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, return a fallback structure
+            analyses = {
+                f"option_{i+1}": {
+                    "analysis": f"Analysis for option {i+1} - parsing failed",
+                    "strengths": [],
+                    "weaknesses": [],
+                    "technical_accuracy": "Could not parse",
+                    "relevance_to_question": "Could not parse",
+                    "raw_text": response_text
+                }
+                for i in range(len(options))
+            }
+        
+        return {
+            "individual_analyses": analyses,
+            "model_used": model_name,
+            "analysis_successful": True,
+            "raw_response": response_text
+        }
+        
+    except Exception as e:
+        return {
+            "individual_analyses": {},
+            "model_used": model_name,
+            "analysis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def synthesize_final_reasoning(
+    question_data: Dict[str, Any],
+    individual_analyses: Dict[str, Any],
+    client: OpenAI,
+    model_name: str,
+    specialty: str = "expert"
+) -> Dict[str, Any]:
+    """
+    Second stage of Method 1: Synthesize individual analyses into final reasoning and decision.
+    
+    Args:
+        question_data: The question data containing question and options
+        individual_analyses: Results from the first stage analysis
+        client: OpenAI client for the synthesis model
+        model_name: Name of the model being used
+        specialty: The expert specialty persona
+        
+    Returns:
+        Dictionary containing synthesized reasoning and final prediction
+    """
+    try:
+        question = question_data["question"]
+        options = question_data["options"]
+        analyses = individual_analyses.get("individual_analyses", {})
+        
+        # Build the prompt for synthesis
+        options_text = "\n".join([f"{i+1}. {option}" for i, option in enumerate(options)])
+        
+        # Format the individual analyses for the synthesis prompt
+        analyses_text = ""
+        for option_key, analysis_data in analyses.items():
+            if isinstance(analysis_data, dict):
+                analyses_text += f"\n{option_key.upper()}:\n"
+                analyses_text += f"Analysis: {analysis_data.get('analysis', 'Not available')}\n"
+                analyses_text += f"Strengths: {', '.join(analysis_data.get('strengths', []))}\n"
+                analyses_text += f"Weaknesses: {', '.join(analysis_data.get('weaknesses', []))}\n"
+                analyses_text += f"Technical Accuracy: {analysis_data.get('technical_accuracy', 'Not assessed')}\n"
+                analyses_text += f"Relevance: {analysis_data.get('relevance_to_question', 'Not assessed')}\n"
+        
+        system_message = f"""You are an expert {specialty}. You have been provided with detailed individual analyses of each answer option for a question. 
+
+Your task is to:
+1. Review all the individual analyses
+2. Synthesize the information to determine the best answer
+3. Provide detailed reasoning for your final decision
+4. Make a definitive prediction
+
+Consider all aspects: technical accuracy, relevance to the question, completeness, and any other relevant factors."""
+
+        user_message = f"""Question: {question}
+
+Options:
+{options_text}
+
+Individual Analyses from First Stage:
+{analyses_text}
+
+Based on these individual analyses, please provide your synthesis and final reasoning. Structure your response as JSON:
+{{
+    "question_restatement": "Restate the question in your own words",
+    "synthesis_reasoning": "Your detailed reasoning that synthesizes the individual analyses",
+    "option_comparison": "Compare the options based on the analyses",
+    "decision_rationale": "Explain why you chose your final answer",
+    "predicted_answer": "The option number (e.g., '3')",
+    "prediction_reasoning": "Brief explanation of your prediction",
+    "confidence_level": "high/medium/low",
+    "confidence_explanation": "Explanation of your confidence level",
+    "scientific_conclusion": "Your final scientific/expert conclusion"
+}}"""
+
+        # Make the API call
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=4000
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to parse the JSON response
+        try:
+            synthesis = json.loads(response_text)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, return a fallback structure
+            synthesis = {
+                "question_restatement": question,
+                "synthesis_reasoning": "Synthesis parsing failed",
+                "option_comparison": "Could not parse comparison",
+                "decision_rationale": "Could not parse rationale", 
+                "predicted_answer": "1",
+                "prediction_reasoning": "Parsing failed - defaulting to option 1",
+                "confidence_level": "low",
+                "confidence_explanation": "Confidence low due to parsing failure",
+                "scientific_conclusion": "Could not generate conclusion due to parsing error",
+                "raw_text": response_text
+            }
+        
+        return {
+            "synthesis": synthesis,
+            "model_used": model_name,
+            "synthesis_successful": True,
+            "raw_response": response_text
+        }
+        
+    except Exception as e:
+        return {
+            "synthesis": {},
+            "model_used": model_name,
+            "synthesis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def comprehensive_disagreement_analysis(
+    question_data: Dict[str, Any],
+    method1_result: Dict[str, Any],
+    method2_result: Dict[str, Any] = None,
+    client: OpenAI = None,
+    model_name: str = None,
+    specialty: str = "expert",
+) -> Dict[str, Any]:
+    """
+    Enhanced fault-oriented disagreement analysis with root cause diagnosis.
+    
+    Structure:
+    1. Answer comparison (correct vs predicted)
+    2. Diagnostic analysis with fault assignment
+    3. External knowledge requirements assessment
+    4. Actionable recommendations for fixes
+    
+    Args:
+        question_data: The question data including context
+        method1_result: Method 1 results with reasoning
+        method2_result: Method 2 results (optional)
+        client: OpenAI client for analysis
+        model_name: Model name for analysis
+        specialty: Expert specialty
+        
+    Returns:
+        Dictionary with enhanced fault-oriented analysis
+    """
+    if not client or not model_name:
+        return {"error": "No analysis client provided"}
+    
+    # Perform enhanced fault-oriented analysis
+    fault_analysis = perform_fault_oriented_analysis(
+        question_data, method1_result, method2_result, client, model_name, specialty
+    )
+    
+    return fault_analysis
+
+
+def perform_fault_oriented_analysis(
+    question_data: Dict[str, Any],
+    method1_result: Dict[str, Any],
+    method2_result: Dict[str, Any] = None,
+    client: OpenAI = None,
+    model_name: str = None,
+    specialty: str = "expert"
+) -> Dict[str, Any]:
+    """Perform systematic fault-oriented disagreement analysis."""
+    
+    question = question_data.get("question", "")
+    context = question_data.get("context", "")
+    options = method1_result.get("options", [])
+    correct_answer = method1_result.get("correct_answer", "")
+    correct_index = method1_result.get("correct_answer_index", -1)
+    
+    # Extract predictions
+    reasoning = method1_result.get("reasoning", {})
+    method1_prediction = reasoning.get("prediction", {}).get("predicted_answer", "Unknown")
+    method1_reasoning_text = reasoning.get("prediction", {}).get("prediction_reasoning", "")
+    
+    method2_prediction = method2_result.get("predicted_answer", "Unknown") if method2_result else None
+    method2_response = method2_result.get("raw_response", "") if method2_result else ""
+    
+    system_message = f"""You are an expert {specialty} performing systematic fault analysis of reasoning disagreements.
+
+Your task is to:
+1. Compare answers and identify discrepancies
+2. Perform diagnostic analysis to determine root cause
+3. Assign fault to specific component (MCQA creation, scoring, reasoning logic, assumptions, etc.)
+4. Identify external knowledge requirements not in source text
+5. Provide actionable recommendations for fixes
+
+Be systematic, precise, and actionable in your analysis."""
+
+    user_message = f"""SOURCE TEXT:
+{context}
+
+QUESTION: {question}
+
+ANSWER OPTIONS:
+{chr(10).join(f"{i+1}. {opt}" for i, opt in enumerate(options))}
+
+CORRECT ANSWER: {correct_answer} (Option {correct_index + 1 if correct_index >= 0 else 'Unknown'})
+
+METHOD 1 PREDICTION: {method1_prediction}
+METHOD 1 REASONING: {method1_reasoning_text}
+
+{f"METHOD 2 PREDICTION: {method2_prediction}" if method2_prediction else ""}
+{f"METHOD 2 RESPONSE: {method2_response}" if method2_response else ""}
+
+Please perform systematic fault analysis and provide your assessment as JSON:
+
+{{
+  "answer_comparison": {{
+    "correct_answer": "The designated correct answer",
+    "method1_prediction": "What Method 1 predicted",
+    "method2_prediction": "What Method 2 predicted (if available)",
+    "has_disagreement": true/false,
+    "disagreement_type": "method1_vs_correct/method2_vs_correct/method1_vs_method2/multiple"
+  }},
+  
+  "diagnostic_analysis": {{
+    "primary_fault_category": "mcqa_creation/scoring_error/reasoning_logic/invalid_assumptions/knowledge_gap/text_ambiguity/option_design",
+    "fault_confidence": "high/medium/low",
+    "specific_fault_description": "Detailed description of what went wrong",
+    "fault_evidence": ["Evidence supporting this fault assignment"],
+    "secondary_contributing_factors": ["Other factors that may have contributed"]
+  }},
+  
+  "external_knowledge_analysis": {{
+    "requires_external_knowledge": true/false,
+    "knowledge_type": "domain_expertise/factual_knowledge/procedural_knowledge/definitional_knowledge/none",
+    "missing_knowledge_summary": "What knowledge was needed but not in text",
+    "likely_knowledge_source": "parametric_pretraining/domain_training/common_knowledge/expert_training/unclear",
+    "knowledge_specificity": "highly_specialized/moderately_specialized/general_knowledge"
+  }},
+  
+  "reasoning_quality_assessment": {{
+    "method1_reasoning_validity": "sound/flawed/partially_sound",
+    "method1_logic_issues": ["Specific logical problems identified"],
+    "method2_reasoning_validity": "sound/flawed/partially_sound/not_applicable",
+    "method2_logic_issues": ["Specific logical problems identified"],
+    "better_reasoning_approach": "method1/method2/neither/unclear"
+  }},
+  
+  "root_cause_analysis": {{
+    "primary_root_cause": "Single most important cause of the problem",
+    "contributing_factors": ["Other factors that contributed to the issue"],
+    "problem_severity": "critical/major/moderate/minor",
+    "problem_scope": "systematic/question_specific/context_specific"
+  }},
+  
+  "actionable_recommendations": {{
+    "immediate_fix": "Most important immediate action needed",
+    "prevention_strategy": "How to prevent similar issues",
+    "mcqa_improvement": "Specific improvements to question/answer design",
+    "text_requirements": "What the source text should contain for this question",
+    "scoring_adjustment": "Any needed changes to answer key or scoring"
+  }},
+  
+  "confidence_assessment": {{
+    "overall_analysis_confidence": "high/medium/low",
+    "most_certain_finding": "The finding you're most confident about",
+    "least_certain_finding": "The finding you're least confident about",
+    "additional_analysis_needed": ["What additional analysis would be helpful"]
+  }}
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=3000
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        try:
+            analysis = json.loads(response_text)
+            return {
+                "analysis_successful": True,
+                "fault_analysis": analysis,
+                "raw_response": response_text
+            }
+        except json.JSONDecodeError:
+            return {
+                "analysis_successful": False,
+                "error": "Failed to parse fault analysis JSON",
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        return {
+            "analysis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def analyze_method1_internal_consistency(
+    question_data: Dict[str, Any],
+    method1_result: Dict[str, Any],
+    client: OpenAI,
+    model_name: str,
+    specialty: str
+) -> Dict[str, Any]:
+    """Analyze internal consistency within Method 1 reasoning."""
+    
+    question = question_data.get("question", "")
+    options = method1_result.get("options", [])
+    reasoning = method1_result.get("reasoning", {})
+    
+    # Get thought process and final prediction
+    thought_process = reasoning.get("thought_process", {})
+    prediction = reasoning.get("prediction", {})
+    final_answer = prediction.get("predicted_answer", "Unknown")
+    final_reasoning = prediction.get("prediction_reasoning", "")
+    scientific_conclusion = reasoning.get("scientific_conclusion", "")
+    
+    # Format thought process for analysis
+    thought_analysis = ""
+    for i, option in enumerate(options):
+        opt_key = f"option_{i+1}"
+        if opt_key in thought_process:
+            thought_analysis += f"Option {i+1}: {option}\nAnalysis: {thought_process[opt_key]}\n\n"
+    
+    system_message = f"""You are an expert {specialty} analyzing the internal consistency of reasoning.
+    
+Your task is to identify inconsistencies, contradictions, or logical gaps within a single reasoning process."""
+
+    user_message = f"""Question: {question}
+
+Options:
+{chr(10).join(f"{i+1}. {opt}" for i, opt in enumerate(options))}
+
+DETAILED THOUGHT PROCESS FOR EACH OPTION:
+{thought_analysis}
+
+FINAL PREDICTION: {final_answer}
+FINAL REASONING: {final_reasoning}
+SCIENTIFIC CONCLUSION: {scientific_conclusion}
+
+Please analyze this reasoning for internal consistency. Look for:
+1. Contradictions between individual option analyses and final decision
+2. Logical inconsistencies in the reasoning chain
+3. Evidence that supports a different conclusion than what was chosen
+4. Quality of evidence integration across options
+5. Whether the final reasoning adequately addresses the individual option analyses
+
+Provide your analysis as JSON:
+{{
+  "has_internal_inconsistency": true/false,
+  "inconsistency_type": "contradiction/logical_gap/evidence_mismatch/integration_failure/none",
+  "specific_issues": ["List of specific problems found"],
+  "evidence_assessment": "How well the evidence supports the final conclusion",
+  "reasoning_quality": "high/medium/low",
+  "recommended_answer": "Which answer the evidence actually supports (if different)",
+  "confidence_in_analysis": "high/medium/low",
+  "detailed_explanation": "Comprehensive explanation of the analysis"
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=2000
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        try:
+            analysis = json.loads(response_text)
+            return {
+                "analysis_successful": True,
+                "analysis": analysis,
+                "raw_response": response_text
+            }
+        except json.JSONDecodeError:
+            return {
+                "analysis_successful": False,
+                "error": "Failed to parse analysis JSON",
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        return {
+            "analysis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def analyze_method_disagreement(
+    question_data: Dict[str, Any],
+    method1_result: Dict[str, Any],
+    method2_result: Dict[str, Any],
+    client: OpenAI,
+    model_name: str,
+    specialty: str
+) -> Dict[str, Any]:
+    """Analyze disagreement between Method 1 and Method 2."""
+    
+    question = question_data.get("question", "")
+    options = method1_result.get("options", [])
+    
+    # Method 1 data
+    reasoning = method1_result.get("reasoning", {})
+    method1_answer = reasoning.get("prediction", {}).get("predicted_answer", "Unknown")
+    method1_reasoning = reasoning.get("prediction", {}).get("prediction_reasoning", "")
+    method1_conclusion = reasoning.get("scientific_conclusion", "")
+    
+    # Method 2 data
+    method2_answer = method2_result.get("predicted_answer", "Unknown")
+    method2_response = method2_result.get("raw_response", "")
+    
+    system_message = f"""You are an expert {specialty} analyzing disagreements between two different reasoning approaches.
+
+Method 1 uses detailed two-stage analysis of each option.
+Method 2 uses direct, intuitive reasoning.
+
+Your task is to determine which method's reasoning is more sound and why."""
+
+    user_message = f"""Question: {question}
+
+Options:
+{chr(10).join(f"{i+1}. {opt}" for i, opt in enumerate(options))}
+
+METHOD 1 (Detailed Analysis):
+Answer: {method1_answer}
+Reasoning: {method1_reasoning}
+Conclusion: {method1_conclusion}
+
+METHOD 2 (Direct Reasoning):  
+Answer: {method2_answer}
+Response: {method2_response}
+
+These methods disagree on the answer. Please analyze:
+1. Which reasoning approach is more sound and why
+2. What specific errors or strengths each method demonstrates
+3. Whether the disagreement reveals a flaw in one approach
+4. Which answer is more likely to be correct based on the evidence
+5. What this disagreement tells us about the question or options
+
+Provide your analysis as JSON:
+{{
+  "disagreement_severity": "high/medium/low",
+  "more_reliable_method": "method1/method2/unclear", 
+  "method1_strengths": ["List strengths of detailed analysis"],
+  "method1_weaknesses": ["List weaknesses of detailed analysis"],
+  "method2_strengths": ["List strengths of direct reasoning"],
+  "method2_weaknesses": ["List weaknesses of direct reasoning"],
+  "likely_correct_answer": "Which answer is probably correct",
+  "reasoning_quality_comparison": "Detailed comparison of reasoning quality",
+  "disagreement_insights": "What this disagreement reveals about the question",
+  "confidence_in_assessment": "high/medium/low",
+  "detailed_explanation": "Comprehensive analysis of the disagreement"
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=2500
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        try:
+            analysis = json.loads(response_text)
+            return {
+                "analysis_successful": True,
+                "analysis": analysis,
+                "raw_response": response_text
+            }
+        except json.JSONDecodeError:
+            return {
+                "analysis_successful": False,
+                "error": "Failed to parse analysis JSON",
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        return {
+            "analysis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def analyze_question_answer_grounding(
+    question_data: Dict[str, Any],
+    method1_result: Dict[str, Any],
+    method2_result: Dict[str, Any] = None,
+    client: OpenAI = None,
+    model_name: str = None,
+    specialty: str = "expert"
+) -> Dict[str, Any]:
+    """Analyze how well the question and answers are grounded in the source text."""
+    
+    question = question_data.get("question", "")
+    context = question_data.get("context", "")
+    options = method1_result.get("options", [])
+    correct_answer = method1_result.get("correct_answer", "")
+    
+    system_message = f"""You are an expert {specialty} analyzing whether a question and its answer options are well-grounded in the provided source text.
+
+Your task is to verify the validity and grounding of the question-answer relationship."""
+
+    user_message = f"""SOURCE TEXT:
+{context}
+
+QUESTION: {question}
+
+ANSWER OPTIONS:
+{chr(10).join(f"{i+1}. {opt}" for i, opt in enumerate(options))}
+
+CORRECT ANSWER: {correct_answer}
+
+Please analyze the grounding of this question-answer pair:
+1. Is the question clearly answerable from the source text?
+2. Are all answer options reasonable given the context?
+3. Is the correct answer well-supported by the source text?
+4. Are there any ambiguities or unclear aspects?
+5. Could multiple answers be considered correct?
+6. Is any critical information missing from the context?
+
+Provide your analysis as JSON:
+{{
+  "question_well_grounded": true/false,
+  "answer_options_appropriate": true/false,
+  "correct_answer_supported": true/false,
+  "ambiguity_level": "high/medium/low/none",
+  "potential_issues": ["List any problems with question/answer grounding"],
+  "missing_information": ["What information might be missing"],
+  "alternative_valid_answers": ["Other answers that could be considered correct"],
+  "grounding_quality": "high/medium/low",
+  "text_evidence_strength": "How well the text supports the correct answer",
+  "confidence_in_assessment": "high/medium/low",
+  "detailed_explanation": "Comprehensive analysis of question-answer grounding"
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=2000
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        try:
+            analysis = json.loads(response_text)
+            return {
+                "analysis_successful": True,
+                "analysis": analysis,
+                "raw_response": response_text
+            }
+        except json.JSONDecodeError:
+            return {
+                "analysis_successful": False,
+                "error": "Failed to parse analysis JSON",
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        return {
+            "analysis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def generate_overall_disagreement_assessment(
+    analysis_results: Dict[str, Any],
+    client: OpenAI,
+    model_name: str,
+    specialty: str
+) -> Dict[str, Any]:
+    """Generate an overall assessment of all disagreement analyses."""
+    
+    type_a = analysis_results.get("type_a_disagreement", {})
+    type_b = analysis_results.get("type_b_disagreement", {})
+    grounding = analysis_results.get("grounding_analysis", {})
+    
+    system_message = f"""You are an expert {specialty} providing a comprehensive assessment of reasoning disagreements and question quality.
+
+Synthesize multiple analyses to provide actionable insights."""
+
+    user_message = f"""I have conducted three analyses:
+
+TYPE A ANALYSIS (Method 1 Internal Consistency):
+{json.dumps(type_a, indent=2) if type_a else "No Type A analysis available"}
+
+TYPE B ANALYSIS (Method 1 vs Method 2 Disagreement):
+{json.dumps(type_b, indent=2) if type_b else "No Type B analysis available"}
+
+GROUNDING ANALYSIS (Question-Answer Validity):
+{json.dumps(grounding, indent=2) if grounding else "No grounding analysis available"}
+
+Please provide an overall assessment that synthesizes these analyses:
+
+{{
+  "primary_issues": ["Most significant problems identified"],
+  "reasoning_quality_overall": "high/medium/low",
+  "most_reliable_approach": "Which reasoning approach to trust",
+  "question_validity": "high/medium/low", 
+  "actionable_recommendations": ["Specific recommendations for improvement"],
+  "confidence_in_overall_assessment": "high/medium/low",
+  "summary": "Executive summary of all findings"
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=1500
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        try:
+            analysis = json.loads(response_text)
+            return {
+                "analysis_successful": True,
+                "analysis": analysis,
+                "raw_response": response_text
+            }
+        except json.JSONDecodeError:
+            return {
+                "analysis_successful": False,
+                "error": "Failed to parse analysis JSON",
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        return {
+            "analysis_successful": False,
+            "error": str(e),
+            "raw_response": ""
+        }
+
+
+def detect_and_diagnose_disagreement(
+    question_data: Dict[str, Any],
+    method1_result: Dict[str, Any],
+    method0_result: Dict[str, Any] = None,
+    method2_result: Dict[str, Any] = None,
+    client: OpenAI = None,
+    model_name: str = "gpt-4",
+    specialty: str = "expert"
+) -> Dict[str, Any]:
+    """
+    Detect disagreement between methods and diagnose the problem.
+    
+    Args:
+        question_data: The question data
+        method1_result: Result from Method 1 (two-stage analysis)
+        method0_result: Result from Method 0 (one-shot), if available
+        method2_result: Result from Method 2 (Argonium-style), if available
+        client: OpenAI client for diagnosis
+        model_name: Name of the model being used for diagnosis
+        specialty: The expert specialty persona
+        
+    Returns:
+        Dictionary containing disagreement analysis and diagnosis
+    """
+    try:
+        # Extract predictions from each method
+        method1_answer = method1_result.get("synthesis", {}).get("predicted_answer", "unknown")
+        method0_answer = method0_result.get("predicted_answer", "unknown") if method0_result else "not_available"
+        method2_answer = method2_result.get("predicted_answer", "unknown") if method2_result else "not_available"
+        
+        # Check for disagreements
+        methods_available = []
+        predictions = {}
+        
+        if method0_result:
+            methods_available.append("Method 0 (One-shot)")
+            predictions["Method 0"] = method0_answer
+            
+        methods_available.append("Method 1 (Two-stage)")
+        predictions["Method 1"] = method1_answer
+        
+        if method2_result:
+            methods_available.append("Method 2 (Argonium)")
+            predictions["Method 2"] = method2_answer
+        
+        # Check if there are disagreements
+        unique_answers = set(predictions.values())
+        unique_answers.discard("unknown")
+        unique_answers.discard("not_available")
+        
+        has_disagreement = len(unique_answers) > 1
+        
+        if not has_disagreement:
+            return {
+                "has_disagreement": False,
+                "diagnosis": "All methods agree or insufficient methods available",
+                "recommendations": [],
+                "analysis_model": model_name
+            }
+        
+        # If there's disagreement, generate diagnosis
+        question = question_data["question"]
+        options = question_data["options"]
+        options_text = "\n".join([f"{i+1}. {option}" for i, option in enumerate(options)])
+        
+        # Format predictions for diagnosis
+        predictions_text = ""
+        for method, answer in predictions.items():
+            if answer not in ["unknown", "not_available"]:
+                predictions_text += f"{method}: Option {answer}\n"
+        
+        # Format method 1 detailed reasoning
+        method1_reasoning = ""
+        if method1_result.get("synthesis"):
+            synthesis = method1_result["synthesis"]
+            method1_reasoning = f"""
+Method 1 Two-Stage Analysis:
+- Question Restatement: {synthesis.get('question_restatement', 'Not available')}
+- Synthesis Reasoning: {synthesis.get('synthesis_reasoning', 'Not available')}
+- Decision Rationale: {synthesis.get('decision_rationale', 'Not available')}
+- Confidence: {synthesis.get('confidence_level', 'Not available')}
+"""
+        
+        # Format other methods' reasoning
+        other_reasoning = ""
+        if method0_result:
+            other_reasoning += f"\nMethod 0 Reasoning: {method0_result.get('raw_response', 'Not available')}\n"
+        if method2_result:
+            other_reasoning += f"\nMethod 2 Reasoning: {method2_result.get('raw_response', 'Not available')}\n"
+        
+        system_message = f"""You are an expert {specialty} tasked with diagnosing why different reasoning methods disagree on the answer to a question.
+
+Your task is to:
+1. Analyze the disagreement between the methods
+2. Identify potential causes of the disagreement
+3. Determine which method(s) may have reasoning flaws
+4. Provide specific recommendations for improvement
+
+Be thorough and objective in your analysis."""
+
+        user_message = f"""Question: {question}
+
+Options:
+{options_text}
+
+Method Predictions:
+{predictions_text}
+
+Detailed Reasoning from Methods:
+{method1_reasoning}
+{other_reasoning}
+
+Please analyze this disagreement and provide a diagnosis. Structure your response as JSON:
+{{
+    "disagreement_summary": "Brief summary of the disagreement",
+    "potential_causes": ["List of potential causes for the disagreement"],
+    "method_analysis": {{
+        "method_0_issues": "Analysis of potential issues with Method 0 (if applicable)",
+        "method_1_issues": "Analysis of potential issues with Method 1",
+        "method_2_issues": "Analysis of potential issues with Method 2 (if applicable)"
+    }},
+    "likely_correct_method": "Which method is likely most reliable and why",
+    "confidence_in_diagnosis": "high/medium/low",
+    "recommendations": ["Specific recommendations for resolving the disagreement"],
+    "regeneration_needed": true/false,
+    "regeneration_focus": "What aspect needs regeneration (if any)"
+}}"""
+
+        # Make the API call for diagnosis
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=3000
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to parse the JSON response
+        try:
+            diagnosis = json.loads(response_text)
+        except json.JSONDecodeError:
+            diagnosis = {
+                "disagreement_summary": "Methods disagree but diagnosis parsing failed",
+                "potential_causes": ["JSON parsing error"],
+                "method_analysis": {
+                    "method_0_issues": "Could not analyze",
+                    "method_1_issues": "Could not analyze", 
+                    "method_2_issues": "Could not analyze"
+                },
+                "likely_correct_method": "Unknown due to parsing error",
+                "confidence_in_diagnosis": "low",
+                "recommendations": ["Fix diagnosis parsing"],
+                "regeneration_needed": False,
+                "regeneration_focus": "None",
+                "raw_diagnosis": response_text
+            }
+        
+        return {
+            "has_disagreement": True,
+            "methods_compared": methods_available,
+            "predictions": predictions,
+            "diagnosis": diagnosis,
+            "analysis_model": model_name,
+            "diagnosis_successful": True
+        }
+        
+    except Exception as e:
+        return {
+            "has_disagreement": True,
+            "diagnosis": f"Error during disagreement analysis: {str(e)}",
+            "analysis_model": model_name,
+            "diagnosis_successful": False,
+            "error": str(e)
+        }
+
+
+def regenerate_method1_reasoning(
+    question_data: Dict[str, Any],
+    disagreement_analysis: Dict[str, Any],
+    individual_analyses: Dict[str, Any],
+    original_result: Dict[str, Any] = None,
+    method0_result: Dict[str, Any] = None,
+    method2_result: Dict[str, Any] = None,
+    analysis_client: OpenAI = None,
+    synthesis_client: OpenAI = None,
+    analysis_model: str = "gpt-4",
+    synthesis_model: str = "gpt-4",
+    specialty: str = "expert"
+) -> Dict[str, Any]:
+    """
+    Regenerate Method 1 reasoning when disagreement is detected.
+    
+    Args:
+        question_data: The question data
+        disagreement_analysis: Results from disagreement diagnosis
+        individual_analyses: Original individual analyses from stage 1
+        method0_result: Method 0 result for context
+        method2_result: Method 2 result for context  
+        analysis_client: Client for analysis model
+        synthesis_client: Client for synthesis model
+        analysis_model: Name of analysis model
+        synthesis_model: Name of synthesis model
+        specialty: Expert specialty persona
+        
+    Returns:
+        Dictionary containing regenerated reasoning
+    """
+    try:
+        diagnosis = disagreement_analysis.get("diagnosis", {})
+        regeneration_needed = diagnosis.get("regeneration_needed", False)
+        regeneration_focus = diagnosis.get("regeneration_focus", "overall")
+        
+        if not regeneration_needed:
+            return {
+                "regeneration_performed": False,
+                "reason": "Diagnosis indicated no regeneration needed",
+                "original_result_maintained": True
+            }
+        
+        # For now, implement a simple regeneration approach
+        # In full implementation, this would have more sophisticated logic
+        regenerated_synthesis = synthesize_final_reasoning(
+            question_data, individual_analyses, synthesis_client, synthesis_model, specialty
+        )
+        
+        return {
+            "regeneration_performed": True,
+            "regeneration_focus": regeneration_focus,
+            "regenerated_synthesis": regenerated_synthesis,
+            "diagnosis_context": diagnosis,
+            "analysis_model": analysis_model,
+            "synthesis_model": synthesis_model
+        }
+        
+    except Exception as e:
+        return {
+            "regeneration_performed": False,
+            "error": str(e),
+            "reason": f"Error during regeneration: {str(e)}"
+        }
+
+
 def generate_reasoning_trace(
     question_data: Dict[str, Any],
     client: OpenAI,
@@ -1409,6 +2507,10 @@ def generate_reasoning_trace(
     grading_model_name: str = None,
     verbose_grading: bool = False,
     reasoning_mode: str = "detailed",
+    method2_model: str = None,
+    config_file: str = None,
+    method1_analysis_model: str = None,
+    method1_synthesis_model: str = None,
 ) -> Dict[str, Any]:
     """
     Generate a reasoning trace for a multiple choice question.
@@ -1481,331 +2583,66 @@ def generate_reasoning_trace(
     # Get the expert persona
     persona = get_expert_persona(specialty)
 
-    # Generate the reasoning prompt based on the selected reasoning mode
-    prompt = generate_reasoning_prompt(
-        specialty, persona, question_text, options, reasoning_mode
-    )
-
+    # NEW METHOD 1: Two-stage approach with separate models
+    
+    # Configure Method 1 clients (use defaults if not specified)
+    method1_analysis_model_name = method1_analysis_model if method1_analysis_model else model_name
+    method1_synthesis_model_name = method1_synthesis_model if method1_synthesis_model else model_name
+    
+    method1_analysis_client = client
+    method1_synthesis_client = client
+    
+    # If different models specified, create separate clients
+    if method1_analysis_model_name != model_name:
+        method1_analysis_client, method1_analysis_model_name = configure_apis(method1_analysis_model_name, config_file)
+    if method1_synthesis_model_name != model_name:
+        method1_synthesis_client, method1_synthesis_model_name = configure_apis(method1_synthesis_model_name, config_file)
+    
     try:
-        # Create the completion request
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"You are an expert {specialty} with deep knowledge in your field. You meticulously analyze questions using detailed reasoning and technical terminology appropriate to your domain. You express your thought process as a rich internal monologue, considering multiple angles, frameworks, and implications. VERY IMPORTANT: Do not assume you know which answer is correct - you must reason through each option carefully and make your own prediction based on your expertise. After your analysis, you must PREDICT which answer you think is correct and explain your reasoning.\n\nIMPORTANT FORMATTING INSTRUCTIONS:\n1. When you make your prediction, you MUST specify a clear NUMERIC answer (e.g., 'Option 3' or just '3').\n2. DO NOT use words like 'first option', 'second option', etc. - use the actual number.\n3. The 'predicted_answer' field in your JSON output must be a simple format like '3' or 'Option 3'.\n4. Your JSON must be properly formatted with no trailing commas and properly escaped characters.\n5. If you have high confidence in one option, state it clearly with 'I predict that Option X is correct'",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,  # Lower temperature for more deterministic output
-            max_tokens=4000,
+        # Stage 1: Generate individual option analyses
+        log_message(f"Method 1 Stage 1: Analyzing individual options with {method1_analysis_model_name}", log_level="INFO")
+        individual_analyses = analyze_individual_options(
+            {"question": question_text, "options": options},
+            method1_analysis_client,
+            method1_analysis_model_name,
+            specialty
         )
-
-        # Extract the response
-        response_text = response.choices[0].message.content.strip()
-
-        # First try to parse as JSON directly
-        try:
-            json_content = json.loads(response_text)
-            log_message("Successfully parsed response as valid JSON", log_level="INFO")
-        except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
-            code_block_match = re.search(
-                r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL
-            )
-            if code_block_match:
-                try:
-                    json_content = json.loads(code_block_match.group(1))
-                    log_message(
-                        "Successfully parsed JSON from code block", log_level="INFO"
-                    )
-                except json.JSONDecodeError:
-                    # Fallback to structured extraction from raw text
-                    log_message(
-                        "JSON parsing failed, extracting structured data from raw text",
-                        log_level="INFO",
-                    )
-
-                    # Extract thought process for each option
-                    thought_process = extract_thought_process_from_text(
-                        response_text, len(options)
-                    )
-
-                    # Extract prediction details
-                    prediction = extract_prediction_from_text(response_text)
-
-                    # Extract scientific conclusion
-                    conclusion = extract_conclusion_from_text(response_text)
-
-                    # Create structured JSON based on reasoning mode
-                    if reasoning_mode == "efficient":
-                        json_content = {
-                            "quick_analysis": "",
-                            "elimination": "",
-                            "prediction": prediction,
-                            "extracted_from_text": True,
-                        }
-                    elif reasoning_mode == "focused":
-                        json_content = {
-                            "key_principle": "",
-                            "quick_elimination": {"dismissed_options": [], "reasoning": ""},
-                            "focused_analysis": {"viable_options": [], "detailed_reasoning": ""},
-                            "prediction": prediction,
-                            "scientific_conclusion": conclusion,
-                            "extracted_from_text": True,
-                        }
-                    else:  # detailed mode
-                        json_content = {
-                            "thought_process": thought_process,
-                            "prediction": prediction,
-                            "scientific_conclusion": conclusion,
-                            "extracted_from_text": True,
-                        }
-            else:
-                # No code block found, extract structured data directly from raw text
-                log_message(
-                    "No JSON code block found, extracting directly from text",
-                    log_level="INFO",
-                )
-
-                # Clean response text to remove any corruptions
-                cleaned_text = response_text
-                # Remove code block artifacts
-                cleaned_text = re.sub(r"```json", "", cleaned_text)
-                cleaned_text = re.sub(r"```", "", cleaned_text)
-                # Remove any stray JSON fragments like "option_X": or "scientific_conclusion":
-                cleaned_text = re.sub(r'"[a-z_]+":\s*', "", cleaned_text)
-                # Remove quotes around paragraphs
-                cleaned_text = re.sub(
-                    r'"\s*(.*?)\s*"', r"\1", cleaned_text, flags=re.DOTALL
-                )
-
-                # Look for actual JSON within the text
-                json_match = re.search(r"\{.*?\}", cleaned_text, re.DOTALL)
-                if json_match:
-                    try:
-                        potential_json = json_match.group(0)
-                        log_message(
-                            "Found potential JSON embedded in text", log_level="INFO"
-                        )
-                        json_content = json.loads(potential_json)
-
-                        # If we found JSON but it's missing thought_process
-                        if "thought_process" not in json_content:
-                            thought_process = extract_thought_process_from_text(
-                                cleaned_text, len(options)
-                            )
-                            json_content["thought_process"] = thought_process
-
-                        # If we found JSON but it's missing prediction
-                        if "prediction" not in json_content:
-                            prediction = extract_prediction_from_text(cleaned_text)
-                            json_content["prediction"] = prediction
-
-                        # If we found JSON but it's missing conclusion
-                        if (
-                            "scientific_conclusion" not in json_content
-                            and "conclusion" not in json_content
-                        ):
-                            conclusion = extract_conclusion_from_text(cleaned_text)
-                            json_content["scientific_conclusion"] = conclusion
-
-                        json_content["partially_extracted"] = True
-                    except json.JSONDecodeError:
-                        # Fallback to full extraction
-                        log_message(
-                            "Embedded JSON invalid, falling back to full extraction",
-                            log_level="INFO",
-                        )
-                        # Extract thought process for each option
-                        thought_process = extract_thought_process_from_text(
-                            cleaned_text, len(options)
-                        )
-
-                        # Extract prediction details
-                        prediction = extract_prediction_from_text(cleaned_text)
-
-                        # Extract scientific conclusion
-                        conclusion = extract_conclusion_from_text(cleaned_text)
-
-                        # Create structured JSON based on reasoning mode
-                        if reasoning_mode == "efficient":
-                            json_content = {
-                                "quick_analysis": "",
-                                "elimination": "",
-                                "prediction": prediction,
-                                "extracted_from_text": True,
-                            }
-                        elif reasoning_mode == "focused":
-                            json_content = {
-                                "key_principle": "",
-                                "quick_elimination": {"dismissed_options": [], "reasoning": ""},
-                                "focused_analysis": {"viable_options": [], "detailed_reasoning": ""},
-                                "prediction": prediction,
-                                "scientific_conclusion": conclusion,
-                                "extracted_from_text": True,
-                            }
-                        else:  # detailed mode
-                            json_content = {
-                                "thought_process": thought_process,
-                                "prediction": prediction,
-                                "scientific_conclusion": conclusion,
-                                "extracted_from_text": True,
-                            }
-                else:
-                    # No embedded JSON, do full extraction
-                    # Extract thought process for each option
-                    thought_process = extract_thought_process_from_text(
-                        cleaned_text, len(options)
-                    )
-
-                    # Extract prediction details
-                    prediction = extract_prediction_from_text(cleaned_text)
-
-                    # Extract scientific conclusion
-                    conclusion = extract_conclusion_from_text(cleaned_text)
-
-                    # Create structured JSON based on reasoning mode
-                    if reasoning_mode == "efficient":
-                        json_content = {
-                            "quick_analysis": "",
-                            "elimination": "",
-                            "prediction": prediction,
-                            "extracted_from_text": True,
-                        }
-                    elif reasoning_mode == "focused":
-                        json_content = {
-                            "key_principle": "",
-                            "quick_elimination": {"dismissed_options": [], "reasoning": ""},
-                            "focused_analysis": {"viable_options": [], "detailed_reasoning": ""},
-                            "prediction": prediction,
-                            "scientific_conclusion": conclusion,
-                            "extracted_from_text": True,
-                        }
-                    else:  # detailed mode
-                        json_content = {
-                            "thought_process": thought_process,
-                            "prediction": prediction,
-                            "scientific_conclusion": conclusion,
-                            "extracted_from_text": True,
-                        }
-
-                # If we couldn't extract meaningful structured data, save the raw text
-                if not thought_process and not prediction["predicted_answer"]:
-                    log_message(
-                        "Structured extraction failed, using raw text",
-                        log_level="WARNING",
-                    )
-                    json_content = {
-                        "thought_process": {},
-                        "prediction": {
-                            "predicted_answer": "Could not extract from response",
-                            "prediction_reasoning": "Error parsing response",
-                            "confidence_level": "unknown",
-                            "confidence_explanation": "Could not determine",
-                        },
-                        "scientific_conclusion": response_text,
-                        "raw_text": response_text,
-                        "extraction_failed": True,
-                    }
-
-        # If we haven't set a key for the raw text and extraction wasn't explicitly marked as failed,
-        # store the original response for debugging
-        if "raw_text" not in json_content and not json_content.get(
-            "extraction_failed", False
-        ):
-            json_content["raw_text"] = response_text
-
-        # Process the result
-        reasoning_data = json_content
-
-        # Update processed question count and log progress
-        _processed_questions += 1
-        completion_percentage = (_processed_questions / _total_questions) * 100
-        elapsed_time = time.time() - _start_time
-        avg_time_per_question = (
-            elapsed_time / _processed_questions if _processed_questions > 0 else 0
+        
+        # Stage 2: Synthesize final reasoning
+        log_message(f"Method 1 Stage 2: Synthesizing final reasoning with {method1_synthesis_model_name}", log_level="INFO")
+        synthesis_result = synthesize_final_reasoning(
+            {"question": question_text, "options": options},
+            individual_analyses,
+            method1_synthesis_client,
+            method1_synthesis_model_name,
+            specialty
         )
+        
+        # Convert synthesis result to format expected by rest of system
+        synthesis_data = synthesis_result.get("synthesis", {})
+        
+        json_content = {
+            "thought_process": {
+                f"option_{i+1}": individual_analyses.get("individual_analyses", {}).get(f"option_{i+1}", {}).get("analysis", f"Analysis for option {i+1}")
+                for i in range(len(options))
+            },
+            "prediction": {
+                "predicted_answer": synthesis_data.get("predicted_answer", "1"),
+                "prediction_reasoning": synthesis_data.get("prediction_reasoning", "No reasoning provided"),
+                "confidence_level": synthesis_data.get("confidence_level", "medium"),
+                "confidence_explanation": synthesis_data.get("confidence_explanation", "No explanation provided")
+            },
+            "scientific_conclusion": synthesis_data.get("scientific_conclusion", "No conclusion provided"),
+            "two_stage_method": True,
+            "question_restatement": synthesis_data.get("question_restatement", ""),
+            "synthesis_reasoning": synthesis_data.get("synthesis_reasoning", ""),
+            "option_comparison": synthesis_data.get("option_comparison", ""),
+            "decision_rationale": synthesis_data.get("decision_rationale", "")
+        }
+        
+        log_message("Successfully generated Method 1 two-stage reasoning", log_level="INFO")
 
-        estimated_remaining = avg_time_per_question * (
-            _total_questions - _processed_questions
-        )
-        if estimated_remaining < 60:
-            eta = f"{estimated_remaining:.0f} seconds"
-        elif estimated_remaining < 3600:
-            eta = f"{estimated_remaining/60:.1f} minutes"
-        else:
-            eta = f"{estimated_remaining/3600:.1f} hours"
-
-        log_message(
-            f"Processed {_processed_questions}/{_total_questions} questions ({completion_percentage:.1f}%) - ETA: {eta}"
-        )
-
-        # Generate dual prediction if enabled
-        dual_prediction_data = None
-        if enable_dual_prediction:
-            log_message(
-                "Generating Argonium-style prediction for comparison...",
-                log_level="INFO",
-            )
-
-            # Use the FULL question text like argonium_score_parallel does (not just question_only)
-            # This ensures identical input format to argonium_score_parallel
-            
-            # Generate Argonium-style prediction with full question text
-            argonium_prediction = generate_argonium_style_prediction(
-                question_text, options, client, model_name, specialty
-            )
-
-            # Grade the argonium-style prediction using the same grader as argonium_score_parallel
-            if grading_client is not None and grading_model_name is not None:
-                correct_answer = options[correct_option_index] if correct_option_index < len(options) else ""
-                argonium_model_answer = argonium_prediction.get("model_answer", "")
-                
-                if argonium_model_answer and correct_answer:
-                    # Use the grading function to evaluate the argonium-style prediction
-                    argonium_grading_result = grade_answer(
-                        predicted_answer=argonium_model_answer,
-                        correct_answer=correct_answer,
-                        question_text=question_text,
-                        options=options,
-                        grading_client=grading_client,
-                        grading_model_name=grading_model_name,
-                        verbose=verbose_grading,
-                    )
-                    
-                    # Add grading results to argonium prediction
-                    argonium_prediction["grading_result"] = argonium_grading_result
-                    argonium_prediction["prediction_correct"] = argonium_grading_result.get("is_correct", False)
-                    argonium_prediction["predicted_answer"] = argonium_grading_result.get("extracted_option_number", "Could not determine")
-                    argonium_prediction["extraction_successful"] = argonium_grading_result.get("grading_successful", False)
-                    
-                    # Extract predicted option number if available
-                    if argonium_grading_result.get("extracted_option_number", "unknown") != "unknown":
-                        try:
-                            argonium_prediction["predicted_num"] = int(argonium_grading_result["extracted_option_number"])
-                        except (ValueError, TypeError):
-                            argonium_prediction["predicted_num"] = None
-                    else:
-                        argonium_prediction["predicted_num"] = None
-
-            # Generate comparison analysis
-            comparison_analysis = generate_prediction_comparison(
-                reasoning_data,
-                argonium_prediction,
-                question_text,
-                options,
-                client,
-                model_name,
-                specialty,
-            )
-
-            dual_prediction_data = {
-                "argonium_prediction": argonium_prediction,
-                "comparison_analysis": comparison_analysis,
-            }
-
-        # Prepare the result
+        # Create the result structure
         result = {
             "question": question_text,
             "context": context_text,
@@ -1816,20 +2653,117 @@ def generate_reasoning_trace(
                 else ""
             ),
             "options": options,
-            "reasoning": reasoning_data,
+            "reasoning": json_content,
+            "model_used": f"{method1_analysis_model} + {method1_synthesis_model}",  # Show both models
+            "method1_details": {
+                "individual_analyses": individual_analyses,
+                "synthesis_result": synthesis_result,
+                "analysis_model": method1_analysis_model,
+                "synthesis_model": method1_synthesis_model,
+                "two_stage_approach": True
+            },
+            "raw_response": synthesis_result.get("raw_response", ""),
         }
 
-        # Add dual prediction data if available
+        # Generate dual prediction if enabled
+        dual_prediction_data = None
+        if enable_dual_prediction:
+            log_message("Generating Method 2 (Argonium-style) prediction", log_level="INFO")
+            
+            # Get Method 2 model 
+            method2_model_name = method2_model if method2_model else model_name
+            method2_client = client
+            if method2_model_name != model_name:
+                method2_client, method2_model_name = configure_apis(method2_model_name, config_file)
+            
+            argonium_prediction = generate_argonium_style_prediction(
+                question_text, options, method2_client, method2_model_name, specialty
+            )
+            
+            # Generate comparison analysis between Method 1 and Method 2
+            comparison_analysis = generate_prediction_comparison(
+                json_content,  # Method 1 reasoning data
+                argonium_prediction,  # Method 2 argonium prediction
+                question_text,
+                options,
+                client,
+                model_name,
+                specialty,
+            )
+            
+            # Create dual prediction data structure
+            dual_prediction_data = {
+                "argonium_prediction": argonium_prediction,
+                "comparison_analysis": comparison_analysis
+            }
+        
+        # Add dual prediction data to result if available
         if dual_prediction_data:
             result["dual_prediction"] = dual_prediction_data
 
-        # Use grading model to verify the answer if available
-        if grading_client is not None and grading_model_name is not None:
-            predicted_answer = reasoning_data.get("prediction", {}).get(
-                "predicted_answer", ""
+        # Detect disagreements between methods and regenerate if needed
+        if dual_prediction_data:
+            log_message("Analyzing agreements/disagreements between methods", log_level="INFO")
+            
+            # Perform comprehensive disagreement analysis (Type A + Type B + Grounding)
+            comprehensive_analysis = comprehensive_disagreement_analysis(
+                question_data=question_data,
+                method1_result=result,
+                method2_result=dual_prediction_data["argonium_prediction"],
+                client=client,
+                model_name=model_name,
+                specialty=specialty
             )
-            # Use the correct option text instead of raw answer text
-            correct_answer = options[correct_option_index] if correct_option_index < len(options) else ""
+            
+            # Store comprehensive analysis in result
+            result["comprehensive_disagreement_analysis"] = comprehensive_analysis
+            
+            # Also store simplified version for backward compatibility
+            fault_analysis = comprehensive_analysis.get("fault_analysis", {})
+            result["disagreement_analysis"] = {
+                "has_disagreement": fault_analysis.get("answer_comparison", {}).get("has_disagreement", False),
+                "analysis_type": "fault_oriented", 
+                "primary_fault": fault_analysis.get("diagnostic_analysis", {}).get("primary_fault_category", "unknown"),
+                "summary": fault_analysis.get("root_cause_analysis", {}).get("primary_root_cause", "")
+            }
+            
+            # If disagreement is found and regeneration is recommended, regenerate Method 1
+            fault_analysis = comprehensive_analysis.get("fault_analysis", {})
+            should_regenerate = (
+                fault_analysis.get("answer_comparison", {}).get("has_disagreement", False) and
+                fault_analysis.get("diagnostic_analysis", {}).get("primary_fault_category") in ["reasoning_logic", "invalid_assumptions"]
+            )
+            if should_regenerate:
+                
+                log_message("Disagreement detected - regenerating Method 1 reasoning", log_level="INFO")
+                
+                regeneration_result = regenerate_method1_reasoning(
+                    question_data=question_data,
+                    original_result=result,
+                    disagreement_analysis=comprehensive_analysis,
+                    individual_analyses=individual_analyses,
+                    method0_result=None,
+                    method2_result=dual_prediction_data["argonium_prediction"],
+                    analysis_client=method1_analysis_client,
+                    synthesis_client=method1_synthesis_client,
+                    analysis_model=method1_analysis_model,
+                    synthesis_model=method1_synthesis_model,
+                    specialty=specialty
+                )
+                
+                # Store regeneration results
+                result["regeneration_result"] = regeneration_result
+                
+                # If regeneration was successful, log the outcome
+                if regeneration_result.get("regeneration_performed", False):
+                    log_message("Method 1 regeneration completed", log_level="INFO")
+                else:
+                    log_message(f"Method 1 regeneration skipped: {regeneration_result.get('reason', 'Unknown')}", log_level="INFO")
+        
+        # Grade the Method 1 prediction if grading model is available
+        if grading_client is not None and grading_model_name is not None:
+            predicted_answer = json_content.get("prediction", {}).get("predicted_answer", "")
+            correct_answer = result["correct_answer"]
 
             if predicted_answer and correct_answer:
                 grading_result = grade_answer(
@@ -1846,22 +2780,8 @@ def generate_reasoning_trace(
                 result["grading_result"] = grading_result
                 result["prediction_correct"] = grading_result.get("is_correct", False)
 
-                # Extract predicted option number if available
-                if (
-                    grading_result.get("extracted_option_number", "unknown")
-                    != "unknown"
-                ):
-                    try:
-                        result["predicted_num"] = int(
-                            grading_result["extracted_option_number"]
-                        )
-                    except (ValueError, TypeError):
-                        result["predicted_num"] = None
-                else:
-                    result["predicted_num"] = None
-
                 log_message(
-                    f"Grading result: {grading_result.get('is_correct', False)} (confidence: {grading_result.get('confidence', 'unknown')})",
+                    f"Method 1 grading result: {grading_result.get('is_correct', False)} (confidence: {grading_result.get('confidence', 'unknown')})",
                     log_level="INFO",
                 )
 
@@ -1884,7 +2804,7 @@ def generate_reasoning_trace(
         error_structure = {
             "error_type": type(e).__name__,
             "error_message": error_msg,
-            "model_used": model_name,
+            "model_used": f"{method1_analysis_model} + {method1_synthesis_model}",
             "query_successful": False,
         }
 
@@ -1908,6 +2828,44 @@ def generate_reasoning_trace(
             },
             "error_details": error_structure,
         }
+
+
+def generate_coherent_stream_analysis(
+    reasoning_trace: Dict[str, Any],
+    specialty: str = "expert",
+    client: OpenAI = None,
+    model_name: str = None,
+) -> str:
+    """
+    Generate a coherent stream of thought analysis showing internal debate between options.
+
+    Args:
+        reasoning_trace: The reasoning trace to analyze
+        specialty: The expert specialty persona
+        model_name: The model to use for generating the synthesis
+
+    Returns:
+        A natural internal dialogue showing the debate between different options
+    """
+    # Extract all the raw content from the reasoning trace
+    question = reasoning_trace.get("question", "Unknown question")
+    options = reasoning_trace.get("options", [])
+    correct_answer_idx = reasoning_trace.get("correct_answer_index", -1)
+    correct_answer = (
+        options[correct_answer_idx]
+        if 0 <= correct_answer_idx < len(options)
+        else "Unknown"
+    )
+    
+    reasoning = reasoning_trace.get("reasoning", {})
+    thought_process = reasoning.get("thought_process", {})
+    prediction = reasoning.get("prediction", {})
+    scientific_conclusion = reasoning.get(
+        "scientific_conclusion", reasoning.get("conclusion", "")
+    )
+    
+    return f"Stream analysis for {question[:50]}... [Implementation placeholder]"
+
 
 
 def generate_coherent_stream_analysis(
@@ -2823,7 +3781,9 @@ def process_question_wrapper(args_tuple):
 
     Args:
         args_tuple: Tuple containing (question, client, model_name, specialty,
-                   enable_dual_prediction, grading_client, grading_model_name, verbose_grading, reasoning_mode)
+                   enable_dual_prediction, grading_client, grading_model_name, 
+                   verbose_grading, reasoning_mode, method2_model, config_file,
+                   method1_analysis_model, method1_synthesis_model)
 
     Returns:
         Dictionary containing the processed trace and metadata
@@ -2839,6 +3799,10 @@ def process_question_wrapper(args_tuple):
             grading_model_name,
             verbose_grading,
             reasoning_mode,
+            method2_model,
+            config_file,
+            method1_analysis_model,
+            method1_synthesis_model,
         ) = args_tuple
 
         # Generate the reasoning trace
@@ -2852,6 +3816,10 @@ def process_question_wrapper(args_tuple):
             grading_model_name=grading_model_name,
             verbose_grading=verbose_grading,
             reasoning_mode=reasoning_mode,
+            method2_model=method2_model,
+            config_file=config_file,
+            method1_analysis_model=method1_analysis_model,
+            method1_synthesis_model=method1_synthesis_model,
         )
 
         return {
@@ -2880,6 +3848,10 @@ def process_questions_parallel(
     verbose_grading: bool,
     reasoning_mode: str = "detailed",
     num_workers: int = 1,
+    method2_model: str = None,
+    config_file: str = None,
+    method1_analysis_model: str = None,
+    method1_synthesis_model: str = None,
 ) -> List[Dict[str, Any]]:
     """
     Process questions in parallel using ThreadPoolExecutor.
@@ -2914,6 +3886,10 @@ def process_questions_parallel(
                 grading_model_name=grading_model_name,
                 verbose_grading=verbose_grading,
                 reasoning_mode=reasoning_mode,
+                method2_model=method2_model,
+                config_file=config_file,
+                method1_analysis_model=method1_analysis_model,
+                method1_synthesis_model=method1_synthesis_model,
             )
             results.append(trace)
         return results
@@ -2933,6 +3909,10 @@ def process_questions_parallel(
             grading_model_name,
             verbose_grading,
             reasoning_mode,
+            method2_model,
+            config_file,
+            method1_analysis_model,
+            method1_synthesis_model,
         )
         for question in mc_questions
     ]
@@ -3003,7 +3983,7 @@ def print_whole_trace_analysis(analysis: Dict[str, Any]):
     print("🧠 WHOLE TRACE META-ANALYSIS")
     print("=" * 100)
 
-    specialty = analysis.get("specialty", "expert").upper()
+    specialty = (analysis.get("specialty", "expert") or "expert").upper()
     print(f"Perspective: {specialty}")
     print(f"Generated at: {analysis.get('generated_at', 'Unknown')}")
     print(f"Questions analyzed: {analysis.get('total_questions_analyzed', 0)}")
@@ -3043,12 +4023,540 @@ def print_whole_trace_analysis(analysis: Dict[str, Any]):
     print("=" * 100)
 
 
+def create_stream_analysis_files(
+    results: List[Dict[str, Any]], 
+    mc_questions: List[Dict[str, Any]], 
+    output_dir: str, 
+    specialty: str = "expert",
+    client: OpenAI = None,
+    model_name: str = None
+) -> None:
+    """Create individual stream analysis files for each question.
+    
+    Args:
+        results: List of reasoning trace results
+        mc_questions: List of original question data
+        output_dir: Directory to output individual files
+        specialty: Expert specialty persona
+        client: OpenAI client for generating analysis
+        model_name: Model name for generating analysis
+    """
+    import os
+    from datetime import datetime
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    log_message(f"Creating individual stream analysis files for {len(results)} questions in {output_dir}")
+    
+    for i, (result, question_data) in enumerate(zip(results, mc_questions)):
+        try:
+            # Generate filename based on question
+            question_text = question_data.get('question', f'question_{i+1}')
+            safe_filename = "".join(c if c.isalnum() else '_' for c in question_text[:50]).strip('_')
+            safe_filename = '_'.join(filter(None, safe_filename.split('_')))
+            if not safe_filename:
+                safe_filename = f"question_{i+1}"
+            
+            stream_filename = f"{i+1:03d}_{safe_filename}_STREAM_ANALYSIS.txt"
+            stream_file_path = os.path.join(output_dir, stream_filename)
+            
+            # Generate the coherent stream analysis
+            if client and model_name:
+                log_message(f"Generating stream analysis for question {i+1}: {question_text[:50]}...")
+                stream_analysis = generate_coherent_stream_analysis(
+                    result, specialty, client, model_name
+                )
+            else:
+                stream_analysis = "Stream analysis not available - no model specified for synthesis."
+            
+            # Write the stream analysis to file
+            with open(stream_file_path, 'w', encoding='utf-8') as f:
+                f.write(f"🌊 COHERENT STREAM OF THOUGHT ANALYSIS\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"QUESTION {i+1}:\n")
+                f.write(f"{question_data.get('question', 'Unknown question')}\n\n")
+                f.write("STREAM OF THOUGHT:\n")
+                f.write("-" * 40 + "\n")
+                f.write(stream_analysis)
+                f.write("\n\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Generated by: {model_name or 'Unknown model'}\n")
+                f.write(f"Specialty: {specialty}\n")
+                f.write(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            
+            if i < 3:  # Log first few for confirmation
+                log_message(f"Created stream analysis file: {stream_filename}")
+                
+        except Exception as e:
+            log_message(f"Error creating stream analysis file for question {i+1}: {e}", log_level="ERROR")
+    
+    log_message(f"Successfully created stream analysis files in {output_dir}")
+
+
+def split_output_file(input_file: str, output_dir: str = None) -> None:
+    """Split a JSON output file into human-readable text files for each question section.
+    
+    Args:
+        input_file: Path to the JSON file containing reasoning traces
+        output_dir: Directory to output individual files (optional)
+    """
+    import os
+    
+    # Set default output directory
+    if output_dir is None:
+        output_dir = f"{input_file}_split"
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    try:
+        # Load the input JSON file
+        with open(input_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Check if data is a list of results
+        if isinstance(data, list):
+            results = data
+        elif isinstance(data, dict) and 'results' in data:
+            results = data['results']
+        else:
+            log_message(f"Unknown JSON structure in {input_file}", log_level="ERROR")
+            return
+            
+        log_message(f"Splitting {len(results)} questions into text files in {output_dir}")
+        
+        # Write each question to separate text files
+        for i, result in enumerate(results):
+            # Generate base filename based on question or index
+            question_text = result.get('question', f'question_{i+1}')
+            # Clean filename - replace spaces with underscores, keep only alphanumeric and underscores
+            safe_filename = "".join(c if c.isalnum() else '_' for c in question_text[:50]).strip('_')
+            # Remove multiple consecutive underscores
+            safe_filename = '_'.join(filter(None, safe_filename.split('_')))
+            if not safe_filename:
+                safe_filename = f"question_{i+1}"
+            
+            base_filename = f"{i+1:03d}_{safe_filename}"
+            
+            # Create the main question file with all sections
+            main_file = os.path.join(output_dir, f"{base_filename}.txt")
+            with open(main_file, 'w', encoding='utf-8') as f:
+                # Write the formatted question output using existing function
+                write_question_sections(f, result, i+1)
+            
+            # Also create separate files for major sections
+            create_section_files(output_dir, base_filename, result)
+                
+        log_message(f"Successfully split into {len(results)} text files in {output_dir}")
+        
+    except Exception as e:
+        log_message(f"Error splitting file: {e}", log_level="ERROR")
+        sys.exit(1)
+
+
+def write_question_sections(file_handle, reasoning_trace: dict, question_num: int):
+    """Write all sections of a question to a file handle."""
+    
+    # Header
+    file_handle.write("=" * 80 + "\n")
+    file_handle.write(f"QUESTION {question_num}\n")
+    file_handle.write("=" * 80 + "\n\n")
+    
+    # Question and options
+    question_text = reasoning_trace.get("question", "No question available")
+    file_handle.write(f"QUESTION: {question_text}\n")
+    file_handle.write("-" * 80 + "\n\n")
+    
+    options = reasoning_trace.get("options", [])
+    correct_index = reasoning_trace.get("correct_answer_index", -1)
+    for i, option in enumerate(options):
+        marker = "✓ " if i == correct_index else "  "
+        file_handle.write(f"{marker}{i+1}. {option}\n")
+    
+    if correct_index >= 0 and correct_index < len(options):
+        file_handle.write(f"\nCORRECT ANSWER: {options[correct_index]}\n")
+    
+    file_handle.write("\n" + "=" * 80 + "\n")
+    file_handle.write("METHOD 1: TWO-STAGE REASONING\n")
+    file_handle.write("=" * 80 + "\n\n")
+    
+    # Method 1 reasoning
+    reasoning = reasoning_trace.get("reasoning", {})
+    
+    # Method 1 prediction
+    prediction = reasoning.get("prediction", {})
+    file_handle.write(f"PREDICTED ANSWER: {prediction.get('predicted_answer', 'Unknown')}\n")
+    file_handle.write(f"CONFIDENCE: {prediction.get('confidence_level', 'Unknown')}\n")
+    file_handle.write(f"REASONING: {prediction.get('prediction_reasoning', 'No reasoning available')}\n\n")
+    
+    # Detailed thought process for each option
+    thought_process = reasoning.get("thought_process", {})
+    if thought_process:
+        file_handle.write("DETAILED THOUGHT PROCESS FOR EACH OPTION:\n")
+        file_handle.write("-" * 40 + "\n")
+        
+        # Sort option keys numerically
+        option_keys = sorted(
+            [k for k in thought_process.keys() if k.startswith("option_")],
+            key=lambda x: (
+                int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else float("inf")
+            ),
+        )
+        
+        for opt_key in option_keys:
+            try:
+                opt_idx = int(opt_key.split("_")[-1])
+                if opt_idx <= len(options):
+                    option_text = options[opt_idx-1] if opt_idx-1 < len(options) else f"Option {opt_idx}"
+                    file_handle.write(f"\nOption {opt_idx}: {option_text}\n")
+                    file_handle.write("~" * 40 + "\n")
+                    
+                    thoughts = thought_process[opt_key]
+                    if isinstance(thoughts, str):
+                        # Format the thought process text with indentation
+                        for line in thoughts.split('\n'):
+                            file_handle.write(f"  {line}\n")
+                    else:
+                        file_handle.write(f"  {str(thoughts)}\n")
+                    file_handle.write("\n")
+            except (ValueError, IndexError):
+                continue
+        file_handle.write("\n")
+    
+    # Two-stage details if available
+    if reasoning.get("two_stage_approach"):
+        file_handle.write("STAGE 1 - INDIVIDUAL OPTION ANALYSIS:\n")
+        file_handle.write("-" * 40 + "\n")
+        question_restatement = reasoning.get("question_restatement", "Not available")
+        file_handle.write(f"Question Restatement: {question_restatement}\n\n")
+        
+        file_handle.write("STAGE 2 - SYNTHESIS:\n")
+        file_handle.write("-" * 40 + "\n")
+        synthesis_reasoning = reasoning.get("synthesis_reasoning", "Not available")
+        decision_rationale = reasoning.get("decision_rationale", "Not available")
+        file_handle.write(f"Synthesis Reasoning: {synthesis_reasoning}\n")
+        file_handle.write(f"Decision Rationale: {decision_rationale}\n\n")
+    
+    # Scientific conclusion
+    conclusion = reasoning.get("scientific_conclusion", reasoning.get("conclusion", "No conclusion available"))
+    file_handle.write("SCIENTIFIC CONCLUSION:\n")
+    file_handle.write("-" * 40 + "\n")
+    file_handle.write(f"{conclusion}\n\n")
+    
+    # Dual prediction if available
+    dual_prediction = reasoning_trace.get("dual_prediction")
+    if dual_prediction:
+        file_handle.write("=" * 80 + "\n")
+        file_handle.write("METHOD 2: ARGONIUM-STYLE PREDICTION\n")
+        file_handle.write("=" * 80 + "\n\n")
+        
+        argonium_pred = dual_prediction.get("argonium_prediction", {})
+        file_handle.write(f"PREDICTED ANSWER: {argonium_pred.get('predicted_answer', 'Unknown')}\n")
+        file_handle.write("RESPONSE:\n")
+        argonium_response = argonium_pred.get("raw_response", "No response available")
+        for line in argonium_response.split("\n"):
+            file_handle.write(f"   {line}\n")
+        
+        file_handle.write("\n" + "-" * 80 + "\n")
+        file_handle.write("COMPARISON ANALYSIS:\n")
+        file_handle.write("-" * 80 + "\n")
+        comparison = dual_prediction.get("comparison_analysis", "No comparison available")
+        file_handle.write(f"{comparison}\n\n")
+    
+    # Disagreement analysis if available
+    disagreement = reasoning_trace.get("disagreement_analysis")
+    if disagreement and disagreement.get("has_disagreement"):
+        file_handle.write("=" * 80 + "\n")
+        file_handle.write("DISAGREEMENT ANALYSIS\n")  
+        file_handle.write("=" * 80 + "\n\n")
+        
+        diagnosis = disagreement.get("diagnosis", {})
+        file_handle.write(f"DISAGREEMENT DETECTED: {disagreement.get('has_disagreement', False)}\n")
+        file_handle.write(f"DIAGNOSIS: {diagnosis.get('disagreement_explanation', 'No explanation')}\n")
+        file_handle.write(f"LIKELY CORRECT METHOD: {diagnosis.get('likely_correct_method', 'Unknown')}\n")
+        
+        regeneration = reasoning_trace.get("regeneration_result")
+        if regeneration and regeneration.get("regeneration_performed"):
+            file_handle.write("\nREGENERATION PERFORMED: Yes\n")
+        file_handle.write("\n")
+    
+    # Grading results
+    if reasoning_trace.get("prediction_correct") is not None:
+        file_handle.write("=" * 80 + "\n")
+        file_handle.write("GRADING RESULTS\n")
+        file_handle.write("=" * 80 + "\n\n")
+        
+        is_correct = reasoning_trace.get("prediction_correct", False)
+        file_handle.write(f"PREDICTION CORRECT: {'✓ YES' if is_correct else '✗ NO'}\n")
+        
+        grading_result = reasoning_trace.get("grading_result", {})
+        if grading_result:
+            confidence = grading_result.get("confidence", "Unknown")
+            file_handle.write(f"GRADING CONFIDENCE: {confidence}\n")
+            reasoning_grade = grading_result.get("reasoning", "No reasoning provided")
+            file_handle.write(f"GRADING REASONING: {reasoning_grade}\n")
+        file_handle.write("\n")
+
+
+def create_section_files(output_dir: str, base_filename: str, result: dict):
+    """Create separate files for major sections."""
+    
+    reasoning = result.get("reasoning", {})
+    
+    # Method 1 reasoning section
+    method1_file = os.path.join(output_dir, f"{base_filename}_method1.txt") 
+    with open(method1_file, 'w', encoding='utf-8') as f:
+        f.write("METHOD 1: TWO-STAGE REASONING\n")
+        f.write("=" * 40 + "\n\n")
+        
+        prediction = reasoning.get("prediction", {})
+        f.write(f"Predicted Answer: {prediction.get('predicted_answer', 'Unknown')}\n")
+        f.write(f"Confidence: {prediction.get('confidence_level', 'Unknown')}\n\n")
+        f.write(f"Reasoning: {prediction.get('prediction_reasoning', 'No reasoning available')}\n\n")
+        
+        # Include detailed thought process for each option
+        thought_process = reasoning.get("thought_process", {})
+        if thought_process:
+            f.write("DETAILED THOUGHT PROCESS FOR EACH OPTION:\n")
+            f.write("-" * 40 + "\n")
+            
+            # Sort option keys numerically
+            option_keys = sorted(
+                [k for k in thought_process.keys() if k.startswith("option_")],
+                key=lambda x: (
+                    int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else float("inf")
+                ),
+            )
+            
+            options = result.get("options", [])
+            for opt_key in option_keys:
+                try:
+                    opt_idx = int(opt_key.split("_")[-1])
+                    if opt_idx <= len(options):
+                        option_text = options[opt_idx-1] if opt_idx-1 < len(options) else f"Option {opt_idx}"
+                        f.write(f"\nOption {opt_idx}: {option_text}\n")
+                        f.write("~" * 40 + "\n")
+                        
+                        thoughts = thought_process[opt_key]
+                        if isinstance(thoughts, str):
+                            for line in thoughts.split('\n'):
+                                f.write(f"  {line}\n")
+                        else:
+                            f.write(f"  {str(thoughts)}\n")
+                        f.write("\n")
+                except (ValueError, IndexError):
+                    continue
+            f.write("\n")
+        
+        conclusion = reasoning.get("scientific_conclusion", reasoning.get("conclusion", "No conclusion available"))
+        f.write(f"Scientific Conclusion:\n{conclusion}\n")
+    
+    # Method 2 (Argonium) section if available
+    dual_prediction = result.get("dual_prediction")
+    if dual_prediction:
+        method2_file = os.path.join(output_dir, f"{base_filename}_method2.txt")
+        with open(method2_file, 'w', encoding='utf-8') as f:
+            f.write("METHOD 2: ARGONIUM-STYLE PREDICTION\n")
+            f.write("=" * 40 + "\n\n")
+            
+            argonium_pred = dual_prediction.get("argonium_prediction", {})
+            f.write(f"Predicted Answer: {argonium_pred.get('predicted_answer', 'Unknown')}\n\n")
+            f.write("Response:\n")
+            argonium_response = argonium_pred.get("raw_response", "No response available")
+            f.write(f"{argonium_response}\n")
+        
+        # Comparison analysis section
+        comparison_file = os.path.join(output_dir, f"{base_filename}_comparison.txt")
+        with open(comparison_file, 'w', encoding='utf-8') as f:
+            f.write("COMPARISON ANALYSIS\n")
+            f.write("=" * 40 + "\n\n")
+            comparison = dual_prediction.get("comparison_analysis", "No comparison available")
+            f.write(f"{comparison}\n")
+    
+    # Enhanced fault-oriented disagreement analysis if available
+    comprehensive_analysis = result.get("comprehensive_disagreement_analysis")
+    if comprehensive_analysis and comprehensive_analysis.get("analysis_successful"):
+        disagreement_file = os.path.join(output_dir, f"{base_filename}_fault_analysis.txt")
+        with open(disagreement_file, 'w', encoding='utf-8') as f:
+            f.write("FAULT-ORIENTED DISAGREEMENT ANALYSIS\n")
+            f.write("=" * 60 + "\n\n")
+            
+            fault_analysis = comprehensive_analysis.get("fault_analysis", {})
+            
+            # 1. Answer Comparison Section
+            answer_comp = fault_analysis.get("answer_comparison", {})
+            f.write("1. ANSWER COMPARISON\n")
+            f.write("-" * 30 + "\n")
+            f.write(f"Correct Answer: {answer_comp.get('correct_answer', 'Unknown')}\n")
+            f.write(f"Method 1 Prediction: {answer_comp.get('method1_prediction', 'Unknown')}\n")
+            if answer_comp.get('method2_prediction'):
+                f.write(f"Method 2 Prediction: {answer_comp.get('method2_prediction', 'Unknown')}\n")
+            f.write(f"Has Disagreement: {answer_comp.get('has_disagreement', 'Unknown')}\n")
+            f.write(f"Disagreement Type: {answer_comp.get('disagreement_type', 'Unknown')}\n\n")
+            
+            # 2. Diagnostic Analysis Section  
+            diagnostic = fault_analysis.get("diagnostic_analysis", {})
+            f.write("2. DIAGNOSTIC ANALYSIS & FAULT ASSIGNMENT\n")
+            f.write("-" * 45 + "\n")
+            primary_fault = diagnostic.get('primary_fault_category', 'Unknown') or 'Unknown'
+            f.write(f"🎯 PRIMARY FAULT: {primary_fault.upper()}\n")
+            fault_confidence = diagnostic.get('fault_confidence', 'Unknown') or 'Unknown'
+            fault_description = diagnostic.get('specific_fault_description', 'N/A') or 'N/A'
+            f.write(f"Fault Confidence: {fault_confidence}\n")
+            f.write(f"Fault Description: {fault_description}\n")
+            
+            evidence = diagnostic.get('fault_evidence', [])
+            if evidence:
+                f.write("\nFault Evidence:\n")
+                for item in evidence:
+                    f.write(f"  • {item}\n")
+            
+            contributing = diagnostic.get('secondary_contributing_factors', [])
+            if contributing:
+                f.write("\nSecondary Contributing Factors:\n")
+                for factor in contributing:
+                    f.write(f"  • {factor}\n")
+            f.write("\n")
+            
+            # 3. External Knowledge Analysis Section
+            knowledge = fault_analysis.get("external_knowledge_analysis", {})
+            f.write("3. EXTERNAL KNOWLEDGE REQUIREMENTS\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Requires External Knowledge: {knowledge.get('requires_external_knowledge', 'Unknown')}\n")
+            if knowledge.get('requires_external_knowledge'):
+                f.write(f"Knowledge Type: {knowledge.get('knowledge_type', 'Unknown')}\n")
+                f.write(f"Knowledge Specificity: {knowledge.get('knowledge_specificity', 'Unknown')}\n")
+                f.write(f"Likely Source: {knowledge.get('likely_knowledge_source', 'Unknown')}\n")
+                f.write(f"\n📚 Missing Knowledge Summary:\n{knowledge.get('missing_knowledge_summary', 'N/A')}\n")
+            f.write("\n")
+            
+            # 4. Reasoning Quality Assessment
+            reasoning_qual = fault_analysis.get("reasoning_quality_assessment", {})
+            f.write("4. REASONING QUALITY ASSESSMENT\n")
+            f.write("-" * 35 + "\n")
+            f.write(f"Method 1 Reasoning Validity: {reasoning_qual.get('method1_reasoning_validity', 'Unknown')}\n")
+            
+            method1_issues = reasoning_qual.get('method1_logic_issues', [])
+            if method1_issues:
+                f.write("Method 1 Logic Issues:\n")
+                for issue in method1_issues:
+                    f.write(f"  • {issue}\n")
+            
+            if reasoning_qual.get('method2_reasoning_validity', 'not_applicable') != 'not_applicable':
+                f.write(f"Method 2 Reasoning Validity: {reasoning_qual.get('method2_reasoning_validity', 'Unknown')}\n")
+                method2_issues = reasoning_qual.get('method2_logic_issues', [])
+                if method2_issues:
+                    f.write("Method 2 Logic Issues:\n")
+                    for issue in method2_issues:
+                        f.write(f"  • {issue}\n")
+            
+            f.write(f"Better Reasoning Approach: {reasoning_qual.get('better_reasoning_approach', 'Unknown')}\n\n")
+            
+            # 5. Root Cause Analysis
+            root_cause = fault_analysis.get("root_cause_analysis", {})
+            f.write("5. ROOT CAUSE ANALYSIS\n")
+            f.write("-" * 25 + "\n")
+            f.write(f"🔍 Primary Root Cause: {root_cause.get('primary_root_cause', 'Unknown')}\n")
+            f.write(f"Problem Severity: {root_cause.get('problem_severity', 'Unknown')}\n")
+            f.write(f"Problem Scope: {root_cause.get('problem_scope', 'Unknown')}\n")
+            
+            contributing_factors = root_cause.get('contributing_factors', [])
+            if contributing_factors:
+                f.write("\nContributing Factors:\n")
+                for factor in contributing_factors:
+                    f.write(f"  • {factor}\n")
+            f.write("\n")
+            
+            # 6. Actionable Recommendations
+            recommendations = fault_analysis.get("actionable_recommendations", {})
+            f.write("6. ACTIONABLE RECOMMENDATIONS\n")
+            f.write("-" * 35 + "\n")
+            f.write(f"🚀 Immediate Fix: {recommendations.get('immediate_fix', 'N/A')}\n")
+            f.write(f"Prevention Strategy: {recommendations.get('prevention_strategy', 'N/A')}\n")
+            f.write(f"MCQA Improvement: {recommendations.get('mcqa_improvement', 'N/A')}\n")
+            f.write(f"Text Requirements: {recommendations.get('text_requirements', 'N/A')}\n")
+            f.write(f"Scoring Adjustment: {recommendations.get('scoring_adjustment', 'N/A')}\n\n")
+            
+            # 7. Confidence Assessment
+            confidence = fault_analysis.get("confidence_assessment", {})
+            f.write("7. CONFIDENCE ASSESSMENT\n")
+            f.write("-" * 30 + "\n")
+            f.write(f"Overall Analysis Confidence: {confidence.get('overall_analysis_confidence', 'Unknown')}\n")
+            f.write(f"Most Certain Finding: {confidence.get('most_certain_finding', 'N/A')}\n")
+            f.write(f"Least Certain Finding: {confidence.get('least_certain_finding', 'N/A')}\n")
+            
+            additional_analysis = confidence.get('additional_analysis_needed', [])
+            if additional_analysis:
+                f.write("\nAdditional Analysis Needed:\n")
+                for item in additional_analysis:
+                    f.write(f"  • {item}\n")
+            
+            # Regeneration details if available
+            regeneration = result.get("regeneration_result")
+            if regeneration:
+                f.write("\n" + "=" * 60 + "\n")
+                f.write("REGENERATION DETAILS\n")
+                f.write("=" * 60 + "\n")
+                f.write(f"Regeneration Performed: {regeneration.get('regeneration_performed', False)}\n")
+                f.write(f"Reason: {regeneration.get('reason', 'Not specified')}\n")
+
+
 def main():
     """Main entry point function."""
     global _total_questions, _processed_questions
 
     # Parse command-line arguments
     args = parse_arguments()
+
+    # Handle split-only mode
+    if args.split_only:
+        split_output_file(args.input_file, args.output_dir)
+        
+        # Also create stream analysis files if requested
+        if args.create_stream_files:
+            # We need to configure the API and load the data for stream analysis
+            client, model_name = configure_apis(args.model, args.config)
+            
+            # Load the results file to extract questions and results
+            try:
+                with open(args.input_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Extract results
+                if isinstance(data, list):
+                    results = data
+                elif isinstance(data, dict) and 'results' in data:
+                    results = data['results']
+                else:
+                    log_message("Cannot create stream analysis files - unknown data format", log_level="ERROR")
+                    return
+                
+                # Extract questions from results (they should contain the original question data)
+                mc_questions = []
+                for result in results:
+                    question_data = {
+                        'question': result.get('question', 'Unknown question'),
+                        'options': result.get('options', []),
+                        'correct_answer': result.get('correct_answer', 'Unknown')
+                    }
+                    mc_questions.append(question_data)
+                
+                # Create stream analysis files
+                output_dir = args.output_dir or f"{args.input_file}_stream_analysis"
+                create_stream_analysis_files(
+                    results, 
+                    mc_questions, 
+                    output_dir, 
+                    args.specialty,
+                    client, 
+                    model_name
+                )
+                
+            except Exception as e:
+                log_message(f"Error creating stream analysis files in split-only mode: {e}", log_level="ERROR")
+        
+        return
 
     # Configure the OpenAI API for the selected model
     client, model_name = configure_apis(args.model, args.config)
@@ -3070,6 +4578,20 @@ def main():
     if args.grading:
         grading_client, grading_model_name = configure_apis(args.grading, args.config)
         log_message(f"Using different model for grading: {args.grading}")
+
+    # Configure the comparison model (if different)
+    comparison_client = client
+    comparison_model_name = model_name
+    if args.comparison_model:
+        comparison_client, comparison_model_name = configure_apis(args.comparison_model, args.config)
+        log_message(f"Using different model for comparison analysis: {args.comparison_model}")
+
+    # Configure the text analysis model (if different) 
+    text_analysis_client = client
+    text_analysis_model_name = model_name
+    if args.text_analysis_model:
+        text_analysis_client, text_analysis_model_name = configure_apis(args.text_analysis_model, args.config)
+        log_message(f"Using different model for text analysis: {args.text_analysis_model}")
 
     # Check grading model requirements
     if args.require_grading_model and not args.grading:
@@ -3102,15 +4624,28 @@ def main():
     # Load argonium results for comparison if provided
     argonium_data = None
     argonium_results_map = {}
+    argonium_text_map = {}
     if args.argonium_results:
+        log_message(f"Attempting to load Argonium results from: {args.argonium_results}")
         argonium_data = load_argonium_results(args.argonium_results)
+        log_message(f"Argonium data loaded: {argonium_data is not None}")
         if argonium_data:
             # Create a map of question_id to results for easier lookup
+            # Also create a text-based lookup for more robust matching
             for result in argonium_data.get('results', []):
                 question_id = result.get('question_id')
                 if question_id:
                     argonium_results_map[question_id] = result
+                
+                # Also index by question text (first 100 chars for matching)
+                question_text = result.get('question', '').strip()
+                if question_text:
+                    text_key = question_text[:100].strip()
+                    argonium_text_map[text_key] = result
             log_message(f"Mapped {len(argonium_results_map)} argonium results for comparison")
+            # Debug: Show the first few question IDs in the map
+            question_ids = list(argonium_results_map.keys())[:5]
+            log_message(f"First few argonium question IDs: {question_ids}")
         else:
             log_message("Failed to load argonium results file", log_level="ERROR")
 
@@ -3178,14 +4713,44 @@ def main():
         args.verbose_grading,
         args.reasoning_mode,
         args.workers,
+        args.method2_model,
+        args.config,
+        args.method1_analysis_model,
+        args.method1_synthesis_model,
     )
 
     # Add argonium file comparison if available
     if argonium_results_map:
+        log_message(f"Starting argonium comparison with {len(results)} results, starting_index={starting_index}")
+        available_keys = list(argonium_results_map.keys())[:10]  # First 10 keys
+        log_message(f"Available argonium keys: {available_keys}")
+        
+        matches_found = 0
         for i, trace in enumerate(results):
-            current_question_index = starting_index + i + 1
-            if current_question_index in argonium_results_map:
-                argonium_result = argonium_results_map[current_question_index]
+            # Use the actual question index from the trace, or fall back to position-based indexing
+            question_index = trace.get('question_index', starting_index + i + 1)
+            if i < 5:  # Debug first few
+                log_message(f"Looking for question index {question_index} (i={i}, trace question_index={trace.get('question_index')}) in argonium map")
+            # Try to match by question index first
+            argonium_result = None
+            match_method = None
+            
+            if question_index in argonium_results_map:
+                argonium_result = argonium_results_map[question_index]
+                match_method = "index"
+            else:
+                # Try to match by question text
+                if i < len(mc_questions):
+                    current_question_text = mc_questions[i].get('question', '').strip()
+                    text_key = current_question_text[:100].strip()
+                    if text_key in argonium_text_map:
+                        argonium_result = argonium_text_map[text_key]
+                        match_method = "text"
+            
+            if argonium_result:
+                matches_found += 1
+                if i < 5:  # Debug first few
+                    log_message(f"Found match for question {i+1} using {match_method} method")
                 
                 # Verify question match using grading model
                 if grading_client and grading_model_name:
@@ -3202,9 +4767,9 @@ def main():
                     }
                     
                     if not question_match.get("is_match", False):
-                        log_message(f"Warning: Question {current_question_index} doesn't match argonium file question", log_level="WARNING")
+                        log_message(f"Warning: Question {question_index} doesn't match argonium file question", log_level="WARNING")
                     else:
-                        log_message(f"Question {current_question_index} verified to match argonium file", log_level="DEBUG")
+                        log_message(f"Question {question_index} verified to match argonium file", log_level="DEBUG")
                 else:
                     # Store without verification if no grading model
                     trace["argonium_file_comparison"] = {
@@ -3212,6 +4777,8 @@ def main():
                         "argonium_result": argonium_result,
                         "argonium_file_path": args.argonium_results
                     }
+        
+        log_message(f"Argonium comparison complete: {matches_found} matches found out of {len(results)} questions")
 
     # Print readable output to console for each result
     for i, (question, trace) in enumerate(zip(mc_questions, results)):
@@ -3243,6 +4810,24 @@ def main():
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         log_message(f"Successfully wrote reasoning traces to {args.output}")
+        
+        # Split output if requested
+        if args.split_output:
+            split_output_file(args.output, args.output_dir)
+        
+        # Create individual stream analysis files if requested
+        if args.create_stream_files:
+            output_dir = args.output_dir or f"{args.output}_stream_analysis"
+            # Use the main client and model for stream analysis
+            create_stream_analysis_files(
+                results, 
+                mc_questions, 
+                output_dir, 
+                args.specialty,
+                client, 
+                model_name
+            )
+            
     except Exception as e:
         log_message(f"Error writing output file: {e}", log_level="ERROR")
 
@@ -3530,6 +5115,15 @@ def main():
     if argonium_data:
         print("\n📋 ARGONIUM FILE COMPARISON ANALYSIS:")
         print("=" * 80)
+        
+        # Debug information about argonium_data
+        log_message(f"DEBUG: argonium_data type: {type(argonium_data)}")
+        log_message(f"DEBUG: argonium_data keys: {list(argonium_data.keys()) if isinstance(argonium_data, dict) else 'Not a dict'}")
+        if isinstance(argonium_data, dict):
+            metadata = argonium_data.get('metadata', {})
+            log_message(f"DEBUG: metadata type: {type(metadata)}")
+            log_message(f"DEBUG: metadata keys: {list(metadata.keys()) if isinstance(metadata, dict) else 'Not a dict'}")
+            log_message(f"DEBUG: overall_accuracy: {metadata.get('overall_accuracy') if isinstance(metadata, dict) else 'No metadata'}")
         
         # Count questions with file comparisons
         file_comparison_count = 0
