@@ -42,6 +42,8 @@ ENV/
 model_servers.yaml
 config.yaml
 secrets.yaml
+*.yaml
+*.yml
 
 # API keys and environment files
 .env

@@ -518,15 +518,11 @@ class LLMFormalLogicAnalyzer:
         if not stream_content:
             return self._empty_analysis(file_path)
         
-        print(f"Analyzing stream content ({len(stream_content)} chars)...")
-        
         # Extract logical clauses using LLM
         clauses = self.llm_analyzer.extract_logical_clauses(stream_content)
-        print(f"Extracted {len(clauses)} logical clauses")
         
         # Detect logical arguments using LLM
         arguments = self.llm_analyzer.detect_logical_arguments(clauses, stream_content)
-        print(f"Detected {len(arguments)} logical arguments")
         
         # Assess argument quality using LLM
         quality_assessment = self.llm_analyzer.assess_argument_quality(arguments, stream_content)
@@ -868,13 +864,26 @@ def main():
     files = glob.glob(pattern)
     
     print(f"Analyzing {len(files)} stream analysis files using {actual_model_name}...")
+    print(f"Progress will be shown for each file with countdown...")
+    print("")
     
-    for file_path in files:
+    for i, file_path in enumerate(files, 1):
         filename = os.path.basename(file_path)
-        print(f"\nProcessing {filename}...")
+        remaining = len(files) - i + 1
+        
+        print(f"🔍 [{i:3d}/{len(files):3d}] Processing: {filename}")
+        print(f"    ⏱️  Remaining files: {remaining - 1}")
+        if i > 1:
+            estimated_remaining = (remaining - 1) * 30  # ~30 seconds per file estimate
+            print(f"    ⏱️  Estimated time remaining: ~{estimated_remaining//60}m {estimated_remaining%60}s")
+        sys.stdout.flush()
         
         analysis = analyzer.analyze_file(file_path)
         results[filename] = analysis
+        
+        print(f"    ✅ Completed: {analysis['total_arguments']} arguments detected")
+        print("")
+        sys.stdout.flush()
     
     # Save results in the specified format
     with open(args.output, 'w', encoding='utf-8') as f:

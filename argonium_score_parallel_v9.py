@@ -4,7 +4,7 @@
 Argonium Advanced Question Grader v9.0 (Parallel)
 
 Usage:
-    python argonium_score_parallel_v9.py <questions_file.json> --model <model_shortname> --grader <grader_shortname> [--config <config_file>] [--parallel <num_workers>] [--format auto|mc|qa] [--random <num_questions>] [--seed <random_seed>] [--save-incorrect]
+    python argonium_score_parallel_v9.py <questions_file.json> --model <model_shortname> --grader <grader_shortname> [--config <config_file>] [--parallel <num_workers>] [--format auto|mc|qa] [--random <num_questions>] [--seed <random_seed>] [--save-incorrect] [--incorrect-output <filename>]
 
 Where:
     - questions_file.json: A JSON file with an array of objects, each having "question" and "answer" fields
@@ -16,6 +16,7 @@ Where:
     - random: Randomly select N questions from the dataset (optional)
     - seed: Random seed for reproducible question selection (optional, only used with --random)
     - save-incorrect: Save incorrectly answered questions to a separate JSON file (optional)
+    - incorrect-output: Custom output file for incorrectly answered questions (optional, requires --save-incorrect)
 
 Examples:
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --parallel 4
@@ -23,6 +24,7 @@ Examples:
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --random 20
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --random 20 --seed 42
     python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --save-incorrect
+    python argonium_score_parallel_v9.py frg_mc_100.json --model llama --grader gpt41 --save-incorrect --incorrect-output my_custom_incorrect.json
 
 The script:
 1) Auto-detects question format (multiple-choice or free-form QA) by default
@@ -490,10 +492,19 @@ def generate_answer(question, config, question_format="auto"):
         # Handle the response based on the OpenAI client version
         if hasattr(response, "choices"):
             # New OpenAI client
-            generated_text = response.choices[0].message.content.strip()
+            if response.choices and len(response.choices) > 0 and response.choices[0].message.content:
+                generated_text = response.choices[0].message.content.strip()
+            else:
+                print(f"Warning: Empty or invalid response from model: {response}")
+                return None
         else:
             # Legacy dict-style response
-            generated_text = response["choices"][0]["message"]["content"].strip()
+            if (response.get("choices") and len(response["choices"]) > 0 and 
+                response["choices"][0].get("message", {}).get("content")):
+                generated_text = response["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"Warning: Empty or invalid response from model: {response}")
+                return None
         return generated_text
     except Exception as e:
         # Propagate the exception to trigger backoff
@@ -753,70 +764,113 @@ Please respond with a JSON object in the following format:
         # Handle the response based on the OpenAI client version
         if hasattr(response, "choices"):
             # New OpenAI client
-            evaluation_text = response.choices[0].message.content.strip()
+            if response.choices and len(response.choices) > 0 and response.choices[0].message.content:
+                evaluation_text = response.choices[0].message.content.strip()
+            else:
+                print(f"Warning: Empty or invalid evaluation response: {response}")
+                raise Exception(f"Empty response from grader model")
         else:
             # Legacy dict-style response
-            evaluation_text = response["choices"][0]["message"]["content"].strip()
+            if (response.get("choices") and len(response["choices"]) > 0 and 
+                response["choices"][0].get("message", {}).get("content")):
+                evaluation_text = response["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"Warning: Empty or invalid evaluation response: {response}")
+                raise Exception(f"Empty response from grader model")
 
         # Try to parse the JSON response
         try:
+            # First, try direct parsing
             evaluation = json.loads(evaluation_text)
+        except json.JSONDecodeError as initial_error:
+            # If direct parsing fails, try preprocessing to fix common escape sequence issues
+            try:
+                # Fix common LaTeX escape sequences in reasoning text
+                # This handles cases where LLMs return LaTeX notation with unescaped backslashes
+                import re
+                
+                # Use a more robust approach to fix JSON with LaTeX content
+                def fix_json_escapes(json_str):
+                    # Find all string values and fix escape sequences within them
+                    def fix_string_escapes(match):
+                        string_content = match.group(1)
+                        # Replace single backslashes with double backslashes, but avoid already escaped ones
+                        # This handles LaTeX expressions like \( \) \pmod{} etc.
+                        fixed_content = re.sub(r'(?<!\\)\\(?![\\"/bfnrt])', r'\\\\', string_content)
+                        return f'"{fixed_content}"'
+                    
+                    # Apply the fix to all string values in the JSON
+                    fixed_json = re.sub(r'"([^"\\]*(\\.[^"\\]*)*)"', fix_string_escapes, json_str)
+                    return fixed_json
+                
+                fixed_evaluation_text = fix_json_escapes(evaluation_text)
+                evaluation = json.loads(fixed_evaluation_text)
+                
+                # Log successful recovery (only log this once to avoid spam)
+                if retry_count == 0:  # Only print on first retry attempt
+                    pass  # Silently handle the recovery to avoid spam
+                
+            except json.JSONDecodeError:
+                # If preprocessing still fails, raise the original error to trigger fallback parsing
+                raise initial_error
 
-            if actual_format == "mc":  # For multiple-choice questions
-                # Handle both old and new JSON field names
-                if "correct_choice" in evaluation:
-                    correct_choice = evaluation["correct_choice"]
-                elif "correct_letter" in evaluation:
-                    correct_choice = evaluation["correct_letter"]
+        if actual_format == "mc":  # For multiple-choice questions
+            # Handle both old and new JSON field names
+            if "correct_choice" in evaluation:
+                correct_choice = evaluation["correct_choice"]
+            elif "correct_letter" in evaluation:
+                correct_choice = evaluation["correct_letter"]
+            else:
+                correct_choice = None
+
+            if "model_choice" in evaluation:
+                model_choice = evaluation["model_choice"]
+            elif "model_letter" in evaluation:
+                model_choice = evaluation["model_letter"]
+            else:
+                model_choice = None
+
+            # Ensure required fields exist
+            if "score" not in evaluation:
+                if "match" in evaluation and isinstance(evaluation["match"], bool):
+                    evaluation["score"] = 1 if evaluation["match"] else 0
                 else:
-                    correct_choice = None
+                    evaluation["score"] = 0
 
-                if "model_choice" in evaluation:
-                    model_choice = evaluation["model_choice"]
-                elif "model_letter" in evaluation:
-                    model_choice = evaluation["model_letter"]
-                else:
-                    model_choice = None
+            # Standardize field names for consistent output
+            if (
+                "correct_choice" in evaluation
+                and "correct_letter" not in evaluation
+            ):
+                evaluation["correct_letter"] = evaluation["correct_choice"]
+            if "model_choice" in evaluation and "model_letter" not in evaluation:
+                evaluation["model_letter"] = evaluation["model_choice"]
 
-                # Ensure required fields exist
-                if "score" not in evaluation:
-                    if "match" in evaluation and isinstance(evaluation["match"], bool):
-                        evaluation["score"] = 1 if evaluation["match"] else 0
-                    else:
-                        evaluation["score"] = 0
+            # Store any extracted identifiers for reference, but don't override grader decision
+            if ref_id:
+                evaluation["extracted_correct_choice"] = ref_id
+                evaluation["correct_choice_type"] = ref_id_type
+            if model_id:
+                evaluation["extracted_model_choice"] = model_id
+                evaluation["model_choice_type"] = model_id_type
 
-                # Standardize field names for consistent output
-                if (
-                    "correct_choice" in evaluation
-                    and "correct_letter" not in evaluation
-                ):
-                    evaluation["correct_letter"] = evaluation["correct_choice"]
-                if "model_choice" in evaluation and "model_letter" not in evaluation:
-                    evaluation["model_letter"] = evaluation["model_choice"]
-
-                # Store any extracted identifiers for reference, but don't override grader decision
-                if ref_id:
-                    evaluation["extracted_correct_choice"] = ref_id
-                    evaluation["correct_choice_type"] = ref_id_type
-                if model_id:
-                    evaluation["extracted_model_choice"] = model_id
-                    evaluation["model_choice_type"] = model_id_type
-
-                # Set the question format in the evaluation
-                evaluation["format"] = actual_format
-
-            else:  # For free-form QA questions
-                # Ensure required fields exist for QA evaluation
-                if "score" not in evaluation and "match" in evaluation:
-                    # Binary scoring if missing score but match is provided
-                    evaluation["score"] = 1.0 if evaluation["match"] else 0.0
-
-                # Set the question format in the evaluation
-                evaluation["format"] = "qa"
+            # Set the question format in the evaluation
+            evaluation["format"] = actual_format
 
             return evaluation
 
-        except json.JSONDecodeError:
+        else:  # For free-form QA questions
+            # Ensure required fields exist for QA evaluation
+            if "score" not in evaluation and "match" in evaluation:
+                # Binary scoring if missing score but match is provided
+                evaluation["score"] = 1.0 if evaluation["match"] else 0.0
+
+            # Set the question format in the evaluation
+            evaluation["format"] = "qa"
+
+            return evaluation
+
+    except json.JSONDecodeError:
             # If the model didn't return valid JSON, try to extract basic score information
             print(
                 f"Warning: Grader returned invalid JSON, attempting to parse response: {evaluation_text}"
@@ -918,7 +972,15 @@ def process_question(
         model_answer = generate_answer(question, model_config, question_format)
         model_time = time.time() - start_time
 
-        # Note: generate_answer uses @backoff decorator and raises exceptions rather than returning error strings
+        # Check if model_answer is None (empty response from model)
+        if model_answer is None:
+            return {
+                "question_id": i,
+                "question": question,
+                "reference_answer": reference_answer,
+                "error": "Empty response from model",
+                "skipped": True,
+            }
 
         # Show detailed model response only in verbose mode
         if verbose:
@@ -1014,6 +1076,62 @@ def process_question(
         }
 
 
+def check_server_connectivity(config, model_name, timeout=30):
+    """
+    Test server connectivity by making a simple API request.
+    
+    Args:
+        config (dict): Model configuration with api_key, api_base, model_name
+        model_name (str): Human-readable name for the model (for error messages)
+        timeout (int): Timeout in seconds for the connectivity test
+        
+    Returns:
+        tuple: (success: bool, error_message: str or None)
+    """
+    try:
+        # Get cached client instance (thread-safe)
+        client = get_openai_client(config["api_key"], config["api_base"], timeout=timeout)
+        
+        # Check if we need to skip temperature (for reasoning models like o3 and o4mini)
+        skip_temperature = any(
+            name in config["model_name"].lower() for name in ["o3", "o4-mini", "o4mini"]
+        )
+        
+        # Prepare a minimal test request
+        params = {
+            "model": config["model_name"],
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello, this is a connectivity test. Please respond with 'OK'."},
+            ],
+            "max_tokens": 5,  # Minimal response to save costs
+        }
+        
+        # Add temperature only for models that support it
+        if not skip_temperature:
+            params["temperature"] = 0.0
+        
+        # Make the test request with shorter timeout for connectivity test
+        response = client.chat.completions.create(**params)
+        
+        # If we get here, the request succeeded
+        return (True, None)
+        
+    except Exception as e:
+        error_msg = str(e)
+        # Provide more specific error messages for common issues
+        if "Invalid authentication" in error_msg or "401" in error_msg:
+            return (False, f"Authentication failed for {model_name}. Please check your API key.")
+        elif "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+            return (False, f"Connection to {model_name} timed out. Server may be unreachable.")
+        elif "connection" in error_msg.lower():
+            return (False, f"Failed to connect to {model_name}. Please check the server URL and network connection.")
+        elif "404" in error_msg or "not found" in error_msg.lower():
+            return (False, f"Model or endpoint not found for {model_name}. Please check the model configuration.")
+        else:
+            return (False, f"Server connectivity test failed for {model_name}: {error_msg}")
+
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Advanced Question Grader (Parallel)")
@@ -1063,6 +1181,10 @@ def parse_arguments():
         action="store_true",
         help="Save incorrectly answered questions to a separate JSON file",
     )
+    parser.add_argument(
+        "--incorrect-output",
+        help="Custom output file for incorrectly answered questions (requires --save-incorrect)",
+    )
     return parser.parse_args()
 
 
@@ -1074,6 +1196,11 @@ def parse_arguments():
 def main():
     args = parse_arguments()
 
+    # Validate argument combinations
+    if args.incorrect_output and not args.save_incorrect:
+        print("Error: --incorrect-output requires --save-incorrect")
+        sys.exit(1)
+
     # Load model configs
     model_config = load_model_config(args.model, args.config)
     grader_config = load_model_config(args.grader, args.config)
@@ -1081,6 +1208,31 @@ def main():
     print(f"Testing model: {args.model} ({model_config['model_name']})")
     print(f"Grading with: {args.grader} ({grader_config['model_name']})")
     print(f"Parallel workers: {args.parallel}")
+
+    # Test server connectivity before processing questions
+    print("\nTesting server connectivity...")
+    
+    # Test model server connectivity
+    print(f"Checking connectivity to test model ({args.model})...", end=" ")
+    model_success, model_error = check_server_connectivity(model_config, args.model)
+    if not model_success:
+        print("✗ FAILED")
+        print(f"Error: {model_error}")
+        print(f"\nCannot proceed without connection to the test model.")
+        sys.exit(1)
+    print("✓ OK")
+    
+    # Test grader server connectivity
+    print(f"Checking connectivity to grader model ({args.grader})...", end=" ")
+    grader_success, grader_error = check_server_connectivity(grader_config, args.grader)
+    if not grader_success:
+        print("✗ FAILED")
+        print(f"Error: {grader_error}")
+        print(f"\nCannot proceed without connection to the grader model.")
+        sys.exit(1)
+    print("✓ OK")
+    
+    print("All servers are reachable. Proceeding with evaluation...\n")
 
     # Load question-answer pairs
     try:
@@ -1424,9 +1576,12 @@ def main():
                 incorrect_results.append(result)
 
         if incorrect_results:
-            # Generate filename for incorrect answers
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            incorrect_file = f"incorrect_{args.model}_{timestamp}.json"
+            # Use custom filename if provided, otherwise generate one
+            if args.incorrect_output:
+                incorrect_file = args.incorrect_output
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                incorrect_file = f"incorrect_{args.model}_{timestamp}.json"
 
             # Prepare data for incorrect answers file
             incorrect_data = {

@@ -592,8 +592,10 @@ class TerminalUI:
             return f"{seconds:.1f} seconds"
         elif seconds < 3600:
             return f"{seconds/60:.1f} minutes"
-        else:
+        elif seconds < 86400:
             return f"{seconds/3600:.1f} hours"
+        else:
+            return f"{seconds/86400:.1f} days"
     
     def update_stats(self, **kwargs):
         """Update the statistics in the top pane."""
@@ -1109,18 +1111,8 @@ def update_global_stats():
                 # Ensure remaining time is not negative
                 remaining_time = max(0, remaining_time)
                 
-                # Cap unreasonably long estimates
-                if remaining_time > 86400:  # More than 24 hours
-                    remaining_time = 86400
-                    
-                # Format the ETA string
-                if remaining_time < 60:
-                    eta = f"{remaining_time:.1f} seconds"
-                elif remaining_time < 3600:
-                    eta = f"{remaining_time/60:.1f} minutes"
-                else:
-                    # Format hours with 1 decimal place
-                    eta = f"{remaining_time/3600:.1f} hours"
+                # Format the ETA string using human_readable_time function
+                eta = human_readable_time(remaining_time)
     
     # Use existing values for current file and chunk (don't reset them)
     status_message = "Processing..."
@@ -1432,7 +1424,7 @@ def find_files_recursively(directory: str, extensions: list) -> list:
     
     Args:
         directory: The root directory to search
-        extensions: List of file extensions to include (e.g., ['.pdf', '.txt', '.md'])
+        extensions: List of file extensions to include (e.g., ['.pdf', '.txt', '.md', '.mmd'])
         
     Returns:
         List of tuples (relative_path, absolute_path)
@@ -3685,7 +3677,7 @@ def process_directory(input_dir: str, output_file: str, chunks_dir: str, model_n
             if terminal_ui and _use_split_screen:
                 terminal_ui.update_stats(status_message="Recursively searching for files...")
             
-            file_tuples = find_files_recursively(input_dir, ['.pdf', '.txt', '.md'])
+            file_tuples = find_files_recursively(input_dir, ['.pdf', '.txt', '.md', '.mmd'])
             
             # Create file map
             for rel_path, abs_path in file_tuples:
@@ -3720,7 +3712,7 @@ def process_directory(input_dir: str, output_file: str, chunks_dir: str, model_n
         else:
             # Only look at files in the input directory
             for filename in os.listdir(input_dir):
-                if filename.lower().endswith(('.pdf', '.txt', '.md')):
+                if filename.lower().endswith(('.pdf', '.txt', '.md', '.mmd')):
                     file_path = os.path.join(input_dir, filename)
                     file_id = generate_file_id(file_path)
                     
