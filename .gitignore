@@ -141,3 +141,6 @@ processed_papers.txt
 README_generated.md
 *_syn_abs.txt
 PROCESSED/
+# added by cross-machine reconcile
+MQE/
+argo_model_servers.yaml
