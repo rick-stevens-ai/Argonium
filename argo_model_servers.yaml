@@ -59,3 +59,4 @@ servers:
   openai_api_base: http://lambda5:44497/v1
   openai_model: argo:o1-preview
 
+# cels-hcdgx2 / gemma4 removed 2026-07-02 per Rick ("take hcdgx2 out of any list"); not a machine we use.
