@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "argonium.family-review.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","campaign_id","lane_id","producer_family","reviewer_family","contract","checks","semantic_sample","mutations","verdict"],
+  "properties": {
+    "schema_version": {"const": "argonium.family-review.v1"},
+    "campaign_id": {"type": "string"},
+    "lane_id": {"type": "string"},
+    "producer_family": {"type": "string"},
+    "reviewer_family": {"type": "string"},
+    "contract": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_sha256","source_manifest_sha256","private_exam_sha256","public_exam_sha256","question_count","mc_count","qa_count"],
+      "properties": {
+        "contract_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}, "source_manifest_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}, "private_exam_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}, "public_exam_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}, "question_count":{"const":1000}, "mc_count":{"const":500}, "qa_count":{"const":500}
+      }
+    },
+    "checks": {
+      "type":"object","additionalProperties":false,
+      "required":["osti5000_membership","source_hash_span","five_choices","key_balance","zero_leakage","public_projection","base_schema","exact_route","qwen_grading","resume_dedup"],
+      "properties": {
+        "osti5000_membership":{"const":true},"source_hash_span":{"const":true},"five_choices":{"const":true},"key_balance":{"const":true},"zero_leakage":{"const":true},"public_projection":{"const":true},"base_schema":{"const":true},"exact_route":{"const":true},"qwen_grading":{"const":true},"resume_dedup":{"const":true}
+      }
+    },
+    "semantic_sample":{"type":"object","required":["mc_reviewed","qa_reviewed","failures"],"properties":{"mc_reviewed":{"minimum":25},"qa_reviewed":{"minimum":25},"failures":{"const":0}}},
+    "mutations":{"type":"object","required":["attempted","killed"],"properties":{"attempted":{"minimum":10},"killed":{"minimum":10}}},
+    "verdict":{"const":"PASS"}
+  }
+}
