@@ -237,13 +237,17 @@ def run_grades(lane,workers,accepted_manifest):
     owner=lane.name; qs={r["question_id"]:r for r in preflight_exam(lane,accepted_manifest)}
     qrows=json.loads((lane/"MODEL_ROSTER.json").read_text())["rows"]
     healthy=[x["requested_route"] for x in qrows if x["label"]=="Qwen grader" and x["state"]=="VALID"]
-    if not healthy: raise SystemExit("No exact healthy Qwen grader route")
+    expected=set(GRADERS)
+    if len(set(healthy))<2 or not set(healthy)<=expected:
+        raise SystemExit("Qwen farm requires at least two distinct exact qualified grader routes")
     for ap in sorted((lane/"answers").glob("*.jsonl")):
         ans=[json.loads(x) for x in ap.read_text().splitlines()]; gp=lane/"grades"/ap.name; done=completed_keys(gp,("owner","question_id","model_label"),GRADE_TERMINAL)
         todo=[a for a in ans if atomic_key(owner,a.get("question_id"),a.get("model_label")) not in done]
         with cf.ThreadPoolExecutor(max_workers=workers) as ex:
             def assigned(a,i):
                 alternatives=[r for r in healthy if r!=a.get("requested_route")]
+                if a.get("requested_route") in expected and not alternatives:
+                    raise SystemExit("Qwen candidate requires a different qualified Qwen grader backend")
                 return (alternatives or healthy)[i%len(alternatives or healthy)]
             fut=[ex.submit(grade_one,owner,qs[a["question_id"]],a,assigned(a,i),gp) for i,a in enumerate(todo)]; [f.result() for f in fut]
 

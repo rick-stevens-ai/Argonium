@@ -103,6 +103,17 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(len(runner.GRADERS),3)
         self.assertEqual(len(set(runner.GRADERS)),3)
 
+    def test_grading_requires_two_distinct_qualified_qwen_routes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            lane=pathlib.Path(td)/"x";lane.mkdir();(lane/"EXAM.jsonl").write_text('')
+            old=runner.preflight_exam
+            try:
+                runner.preflight_exam=lambda lane,manifest: []
+                (lane/"MODEL_ROSTER.json").write_text(json.dumps({"rows":[{"label":"Qwen grader","requested_route":runner.GRADERS[0],"state":"VALID"}]}))
+                with self.assertRaisesRegex(SystemExit,"at least two"):runner.run_grades(lane,1,pathlib.Path("manifest"))
+            finally:runner.preflight_exam=old
+
     def test_v3_contract_has_exact_roster_and_unresolved_routes(self):
         p=pathlib.Path(__file__).parents[1]/"AREA_EXAM_11K_CONTRACT.json"
         roster=runner.load_roster(p)

@@ -50,6 +50,8 @@
   ],
   "qwen_grader_routes": ["pecans/qwen3.8-27b","uicgpu/qwen3.8-27b","chiatta/qwen38-27b"],
   "qwen_rules": {
+    "minimum_distinct_qualified_routes": 2,
+    "unqualified_routes_prohibited": true,
     "strict_json_keys": ["score","match","confidence","reasoning"],
     "score_values": [0,1],
     "blind_model_label": true,
