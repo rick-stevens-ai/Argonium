@@ -70,6 +70,7 @@ final_reports/
 # Generated files
 *.json
 !*.example.json
+!AREA_EXAM_11K_CONTRACT.json
 *.txt
 !requirements.txt
 *.csv
