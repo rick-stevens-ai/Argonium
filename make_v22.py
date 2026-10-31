@@ -2055,8 +2055,8 @@ def generate_multiple_choice_qa_pairs(chunk_id: str, chunk_text: str, model_name
     else:
         formatted_question = question + "\n\n"
     for i, choice in enumerate(answers):
-        choice_marker = "(*)" if i == correct_index else ""  # Mark correct answer with (*)
-        formatted_question += f"{i+1}) {choice} {choice_marker}  \n"
+        choice_marker = ""  # No marker — answer key leak fixed 2026-10-31 (correct answer in answer field only)
+        formatted_question += f"{i+1}) {choice}\n"
     
     # Create clean answer explanation using numeric labels for consistency
     correct_number = correct_index + 1  # Convert 0-based index to 1-based number
