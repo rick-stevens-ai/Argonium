@@ -1,0 +1,16 @@
+servers:
+  - server: argo
+    shortname: sonnet
+    openai_api_base: http://100.87.221.1:44497/v1
+    openai_api_key: stevens
+    openai_model: argo:claude-sonnet-4.6
+  - server: qwen-local
+    shortname: qwen-grader
+    openai_api_base: http://100.81.132.121:8401/v1
+    openai_api_key: DLS-2026
+    openai_model: qwen3.8-27b
+  - server: local-sonnet
+    shortname: sonnet-grader
+    openai_api_base: http://100.87.221.1:44497/v1
+    openai_api_key: stevens
+    openai_model: argo:claude-sonnet-4.6
