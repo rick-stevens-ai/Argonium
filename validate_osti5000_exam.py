@@ -22,10 +22,12 @@ def load_accepted_manifest(path):
    if pid in idx: raise ValueError(f'duplicate paper_id {pid}')
    allowed={}
    for s in r.get('source_files') or []:
-    if not s.get('path'): continue
+    if not isinstance(s,dict): raise ValueError(f'row {n}: source_files entries must be objects')
+    raw_path=s.get('path')
+    if not isinstance(raw_path,str) or not raw_path.strip(): raise ValueError(f'row {n}: source file missing non-empty path')
     digest=s.get('sha256')
     if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest): raise ValueError(f'row {n}: source file missing valid sha256')
-    resolved=str(Path(s['path']).expanduser().resolve())
+    resolved=str(Path(raw_path).expanduser().resolve())
     if resolved in allowed and allowed[resolved]!=digest: raise ValueError(f'row {n}: conflicting hashes for {resolved}')
     allowed[resolved]=digest
    selected=r.get('selected_text_path')

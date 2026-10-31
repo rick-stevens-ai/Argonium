@@ -51,4 +51,12 @@ class OstiMembershipTests(unittest.TestCase):
             for bad in ({}, {"paper_id":None}, {"paper_id":""}, {"paper_id":"   "}, {"paper_id":17}):
                 first={**base,**bad};p=self.accepted_manifest(root,first)
                 with self.assertRaisesRegex(ValueError,"paper_id must be a non-empty string"):v.load_accepted_manifest(p)
+
+    def test_rejects_malformed_source_file_entries(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td);src=root/'a.txt';src.write_text('source');digest=v.sha256(src)
+            base={"paper_id":"osti:1","status":"ACCEPT","selected_text_path":str(src)}
+            for entries,needle in [([None],"must be objects"),([{}],"non-empty path"),([{"sha256":digest}],"non-empty path"),([{"path":"","sha256":digest}],"non-empty path"),([{"path":None,"sha256":digest}],"non-empty path"),([{"path":str(src)}],"valid sha256")]:
+                p=self.accepted_manifest(root,{**base,"source_files":entries})
+                with self.assertRaisesRegex(ValueError,needle):v.load_accepted_manifest(p)
 if __name__=='__main__':unittest.main()

@@ -67,9 +67,12 @@ class ContractTests(unittest.TestCase):
     def test_mc_leak_markers_and_key_parser(self):
         clean={"question":"Choose. A. one B. two C. three D. four E. five","answer":"C. three"}
         opts=runner.mc_options(clean);self.assertEqual(runner.mc_correct_label(clean,opts),"C");self.assertEqual(runner.mc_leakage(clean,opts),[])
-        for marker in ("*two","✓ two","➡ two","➤ two","__two__","_two_","~~two~~","`two`","# two","two (correct answer)","[x] two","(selected) two","selected option two","Correct: B","key B","selected: B","checkmark B","Answer: B"):
+        for marker in ("*two","✓ two","➡ two","➤ two","← two","↦ two","⇒ two","➔ two","☒ two","✗ two","❌ two","√ two","__two__","_two_","~~two~~","`two`","# two","<b>two</b>","<u>two</u>","<strong>two</strong>","two (answer)","two [answer]","two (correct answer)","[x] two","(selected) two","selected option two","Correct: B","key B","selected: B","checkmark B","Answer: B","answer","correct","key","selected","checkmark"):
             row={"question":"Choose.","options":["one",marker,"three","four","five"],"answer":"B. "+marker}
             self.assertTrue(runner.mc_leakage(row,runner.mc_options(row)))
+
+        natural={"question":"Choose.","options":["the correct boundary condition","selected eigenvalues of A","key physical parameter","three","four"],"answer":"A. the correct boundary condition"}
+        self.assertEqual(runner.mc_leakage(natural,runner.mc_options(natural)),[])
 
     def full_exam(self):
         rows=[]
@@ -112,6 +115,35 @@ class ContractTests(unittest.TestCase):
                 runner.preflight_exam=lambda lane,manifest: []
                 (lane/"MODEL_ROSTER.json").write_text(json.dumps({"rows":[{"label":"Qwen grader","requested_route":runner.GRADERS[0],"state":"VALID"}]}))
                 with self.assertRaisesRegex(SystemExit,"at least two"):runner.run_grades(lane,1,pathlib.Path("manifest"))
+            finally:runner.preflight_exam=old
+
+    def test_fixed_denominator_aggregate_rejects_missing_and_duplicate_terminal_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            lane=pathlib.Path(td)/"owner";grades=lane/"grades";grades.mkdir(parents=True)
+            questions=[{"question_id":f"q{i}"} for i in range(1000)]
+            labels=[f"m{i}" for i in range(17)]
+            contract=lane/"contract.json";contract.write_text(json.dumps({"models":[{"label":x,"requested_route":None} for x in labels]}))
+            old=runner.preflight_exam
+            try:
+                runner.preflight_exam=lambda lane,manifest: questions
+                rows=[]
+                for label in labels:
+                    for i in range(1000): rows.append({"owner":"owner","question_id":f"q{i}","model_label":label,"state":"VALID_GRADE","score":1 if i%2==0 else 0})
+                (grades/"all.jsonl").write_text(''.join(json.dumps(x)+'\n' for x in rows[:-1]))
+                with self.assertRaisesRegex(SystemExit,"incomplete fixed denominator"):runner.aggregate_lane(lane,contract,pathlib.Path("manifest"))
+                for bad in [
+                    {"owner":"owner","question_id":"q0","model_label":"m0","state":"INVALID_GRADE","score":None},
+                    {"owner":"owner","question_id":"q0","model_label":"m0","state":"UNKNOWN","score":0},
+                    {"owner":"owner","question_id":"q0","model_label":"m0","score":0},
+                ]:
+                    (grades/"all.jsonl").write_text(json.dumps(bad)+'\n')
+                    with self.assertRaisesRegex(SystemExit,"nonterminal or unknown grade state"):runner.aggregate_lane(lane,contract,pathlib.Path("manifest"))
+                (grades/"all.jsonl").write_text(''.join(json.dumps(x)+'\n' for x in rows+[rows[0]]))
+                with self.assertRaisesRegex(SystemExit,"duplicate terminal grade key"):runner.aggregate_lane(lane,contract,pathlib.Path("manifest"))
+                (grades/"all.jsonl").write_text(''.join(json.dumps(x)+'\n' for x in rows))
+                runner.aggregate_lane(lane,contract,pathlib.Path("manifest"))
+                out=json.loads((lane/"AGGREGATE.json").read_text())
+                self.assertEqual(out["grade_key_count"],17000);self.assertTrue(all(x["denominator"]==1000 and x["correct"]==500 for x in out["results"]))
             finally:runner.preflight_exam=old
 
     def test_v3_contract_has_exact_roster_and_unresolved_routes(self):

@@ -22,14 +22,16 @@ def atomic_key(owner,qid,label): return owner,qid,label
 
 LEAK_PATTERNS=(
     (re.compile(r"\*"),"asterisk"),
-    (re.compile(r"[✓✔✅☑★➜➤➡→]"),"answer marker glyph"),
+    (re.compile(r"[✓✔✅☑☒✗❌√★➜➤➡→←↦⇒➔]"),"answer marker glyph"),
     (re.compile(r"__(?:[^_]|_(?!_))+__"),"markdown underline/bold"),
     (re.compile(r"(?<!\w)_(?!_)[^_\n]+_(?!\w)"),"markdown emphasis"),
     (re.compile(r"~~[^~\n]+~~"),"markdown strikethrough"),
     (re.compile(r"`[^`\n]+`"),"markdown inline code"),
     (re.compile(r"(?m)^\s*#{1,6}\s+"),"markdown heading"),
+    (re.compile(r"(?i)</?(?:b|strong|u|mark|em|i)(?:\s+[^>]*)?>"),"HTML emphasis/marking"),
     (re.compile(r"(?i)\b(?:correct\s+(?:answer|option|choice)|answer\s*key|keyed\s+answer)\b"),"answer-key phrase"),
     (re.compile(r"(?i)[\[(](?:x|✓|correct|right|selected)[\])]"),"checked marker"),
+    (re.compile(r"(?i)[\[(](?:answer|key)[\])]"),"answer/key marker"),
     (re.compile(r"(?i)\b(?:selected|right)\s+(?:answer|option|choice)\b"),"selected-answer phrase"),
     (re.compile(r"(?i)\b(?:correct|key|selected|checkmark)\s*[:=-]?\s*[A-E]\b"),"textual key marker"),
     (re.compile(r"(?i)(?:^|\s)(?:answer|key)\s*[:=-]\s*[A-E]\b"),"explicit key label"),
@@ -60,7 +62,10 @@ def mc_correct_label(row,opts):
 
 def mc_leakage(row,opts):
     text="\n".join([str(row.get("question","")),*opts.values()])
-    return [name for rx,name in LEAK_PATTERNS if rx.search(text)]
+    found=[name for rx,name in LEAK_PATTERNS if rx.search(text)]
+    marker_words={"answer","correct","key","selected","checkmark"}
+    if any(re.sub(r"[^a-z]","",v.lower()) in marker_words for v in opts.values()): found.append("standalone marker word")
+    return found
 
 def redact_question(row):
     """Materialize the exact candidate-visible boundary."""
@@ -251,8 +256,46 @@ def run_grades(lane,workers,accepted_manifest):
                 return (alternatives or healthy)[i%len(alternatives or healthy)]
             fut=[ex.submit(grade_one,owner,qs[a["question_id"]],a,assigned(a,i),gp) for i,a in enumerate(todo)]; [f.result() for f in fut]
 
+def aggregate_lane(lane,contract,accepted_manifest):
+    """Publish scores only from exact, complete 1,000-question terminal grade sets."""
+    owner=lane.name
+    questions=preflight_exam(lane,accepted_manifest)
+    qids={q["question_id"] for q in questions}
+    if len(qids)!=1000: raise SystemExit("aggregate requires exactly 1000 unique question IDs")
+    labels=[label for label,_ in load_roster(contract)]
+    if len(labels)!=17 or len(set(labels))!=17: raise SystemExit("aggregate requires exactly 17 unique model labels")
+    terminal_by_key={}
+    for gp in sorted((lane/"grades").glob("*.jsonl")):
+        for n,line in enumerate(gp.read_text(errors="strict").splitlines(),1):
+            if not line.strip(): continue
+            try:r=json.loads(line)
+            except Exception as e: raise SystemExit(f"malformed grade row {gp}:{n}: {e}")
+            state=r.get("state")
+            if state not in GRADE_TERMINAL: raise SystemExit(f"nonterminal or unknown grade state {state!r} at {gp}:{n}")
+            key=(r.get("owner"),r.get("question_id"),r.get("model_label"))
+            if key in terminal_by_key: raise SystemExit(f"duplicate terminal grade key {key}")
+            if key[0]!=owner or key[1] not in qids or key[2] not in labels: raise SystemExit(f"unexpected terminal grade key {key}")
+            score=r.get("score")
+            if type(score) is not int or score not in (0,1): raise SystemExit(f"invalid terminal score for {key}")
+            if state=="FAILURE_ZERO" and score!=0: raise SystemExit(f"FAILURE_ZERO must score zero for {key}")
+            terminal_by_key[key]=r
+    results=[]
+    for label in labels:
+        rows=[terminal_by_key.get((owner,qid,label)) for qid in qids]
+        missing=sum(r is None for r in rows)
+        if missing: raise SystemExit(f"incomplete fixed denominator for {label}: {1000-missing}/1000")
+        complete=[r for r in rows if r is not None]
+        correct=sum(r["score"] for r in complete)
+        failures=sum(r["state"]=="FAILURE_ZERO" for r in complete)
+        results.append({"model_label":label,"correct":correct,"denominator":1000,"score_percent":correct/10.0,"failure_zero_count":failures})
+    out={"schema":"argonium-fixed-denominator-v1","owner":owner,"question_count":1000,"model_count":17,"grade_key_count":len(terminal_by_key),"results":results}
+    if len(terminal_by_key)!=17000: raise SystemExit(f"unexpected terminal grade key count {len(terminal_by_key)}")
+    tmp=lane/"AGGREGATE.json.tmp";final=lane/"AGGREGATE.json"
+    tmp.write_text(json.dumps(out,indent=2,sort_keys=True)+"\n");os.replace(tmp,final)
+    print(json.dumps(out,indent=2,sort_keys=True))
+
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("mode",choices=["qualify","answers","grades"]);ap.add_argument("--lane",type=Path,required=True);ap.add_argument("--contract",type=Path,required=True);ap.add_argument("--accepted-manifest",type=Path);ap.add_argument("--workers",type=int,default=2);a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument("mode",choices=["qualify","answers","grades","aggregate"]);ap.add_argument("--lane",type=Path,required=True);ap.add_argument("--contract",type=Path,required=True);ap.add_argument("--accepted-manifest",type=Path);ap.add_argument("--workers",type=int,default=2);a=ap.parse_args()
     if a.workers<1 or a.workers>4: raise SystemExit("workers must be 1..4")
-    {"qualify":lambda:qualify(a.lane,a.contract,a.accepted_manifest),"answers":lambda:run_answers(a.lane,a.contract,a.workers,a.accepted_manifest),"grades":lambda:run_grades(a.lane,a.workers,a.accepted_manifest)}[a.mode]()
+    {"qualify":lambda:qualify(a.lane,a.contract,a.accepted_manifest),"answers":lambda:run_answers(a.lane,a.contract,a.workers,a.accepted_manifest),"grades":lambda:run_grades(a.lane,a.workers,a.accepted_manifest),"aggregate":lambda:aggregate_lane(a.lane,a.contract,a.accepted_manifest)}[a.mode]()
 if __name__=="__main__":main()
